@@ -1,0 +1,169 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  background: #020617;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+pre,
+code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(125, 211, 252, 0.2);
+  border-radius: 999px;
+}
+
+.accent-blue {
+  background: #60a5fa;
+}
+
+.accent-emerald {
+  background: #34d399;
+}
+
+.accent-amber {
+  background: #fbbf24;
+}
+
+.accent-rose {
+  background: #fb7185;
+}
+
+.accent-violet {
+  background: #c084fc;
+}
+
+.accent-cyan {
+  background: #22d3ee;
+}
+
+.remote-cursor {
+  border-left-width: 2px;
+  border-left-style: solid;
+  margin-left: -1px;
+}
+
+.remote-cursor-blue {
+  border-left-color: #60a5fa;
+}
+
+.remote-cursor-emerald {
+  border-left-color: #34d399;
+}
+
+.remote-cursor-amber {
+  border-left-color: #fbbf24;
+}
+
+.remote-cursor-rose {
+  border-left-color: #fb7185;
+}
+
+.remote-cursor-violet {
+  border-left-color: #c084fc;
+}
+
+.remote-cursor-cyan {
+  border-left-color: #22d3ee;
+}
+
+.remote-cursor-label {
+  margin-left: 6px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.remote-cursor-label-blue {
+  background: rgba(96, 165, 250, 0.16);
+  color: #bfdbfe;
+}
+
+.remote-cursor-label-emerald {
+  background: rgba(52, 211, 153, 0.16);
+  color: #a7f3d0;
+}
+
+.remote-cursor-label-amber {
+  background: rgba(251, 191, 36, 0.16);
+  color: #fde68a;
+}
+
+.remote-cursor-label-rose {
+  background: rgba(251, 113, 133, 0.16);
+  color: #fecdd3;
+}
+
+.remote-cursor-label-violet {
+  background: rgba(192, 132, 252, 0.16);
+  color: #e9d5ff;
+}
+
+.remote-cursor-label-cyan {
+  background: rgba(34, 211, 238, 0.16);
+  color: #a5f3fc;
+}
+
+.remote-line-highlight-blue {
+  background: rgba(96, 165, 250, 0.08);
+}
+
+.remote-line-highlight-emerald {
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.remote-line-highlight-amber {
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.remote-line-highlight-rose {
+  background: rgba(251, 113, 133, 0.08);
+}
+
+.remote-line-highlight-violet {
+  background: rgba(192, 132, 252, 0.08);
+}
+
+.remote-line-highlight-cyan {
+  background: rgba(34, 211, 238, 0.08);
+}
