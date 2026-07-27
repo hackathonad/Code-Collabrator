@@ -1,27 +1,61 @@
-import { Send, Sparkles } from "lucide-react";
-import { useEffect, useRef, useState, type MutableRefObject } from "react";
+import { PanelRightClose, Send } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
-import { formatTimestamp } from "../../lib/format";
-import type { ChatMessage, UserSession } from "../../types/collaboration";
-import { Panel } from "../ui/Panel";
+import { ChatMessage } from "../ui/ChatMessage";
+import type { ChatMessage as ChatMessageType, Participant, TypingParticipant, UserSession } from "../../types/collaboration";
 
 interface ChatPanelProps {
-  messages: ChatMessage[];
+  messages: ChatMessageType[];
+  participants: Participant[];
+  typingUsers: TypingParticipant[];
   session: UserSession;
   roomId: string;
   socketRef: MutableRefObject<Socket | null>;
+  onClose: () => void;
 }
 
-export const ChatPanel = ({ messages, session, roomId, socketRef }: ChatPanelProps) => {
+export const ChatPanel = ({ messages, participants, typingUsers, session, roomId, socketRef, onClose }: ChatPanelProps) => {
   const [message, setMessage] = useState("");
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
+  const typingRef = useRef(false);
+  const participantLookup = useMemo(
+    () => new Map(participants.map((participant) => [participant.userId, participant])),
+    [participants]
+  );
+  const visibleTypingUsers = typingUsers.filter((participant) => participant.userId !== session.userId);
 
   useEffect(() => {
-    containerRef.current?.scrollTo({
-      top: containerRef.current.scrollHeight,
-      behavior: "smooth"
+    endRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "end"
     });
-  }, [messages]);
+  }, [messages, visibleTypingUsers]);
+
+  useEffect(
+    () => () => {
+      if (typingRef.current) {
+        socketRef.current?.emit("chat:typing", {
+          roomId,
+          userId: session.userId,
+          isTyping: false
+        });
+      }
+    },
+    [roomId, session.userId, socketRef]
+  );
+
+  const emitTyping = (isTyping: boolean) => {
+    if (typingRef.current === isTyping) {
+      return;
+    }
+
+    typingRef.current = isTyping;
+    socketRef.current?.emit("chat:typing", {
+      roomId,
+      userId: session.userId,
+      isTyping
+    });
+  };
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -35,54 +69,72 @@ export const ChatPanel = ({ messages, session, roomId, socketRef }: ChatPanelPro
       userId: session.userId,
       message: trimmed
     });
+    emitTyping(false);
     setMessage("");
   };
 
   return (
-    <Panel className="flex min-h-[320px] flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <div className="rounded-2xl bg-sky-400/10 p-2 text-sky-200">
-          <Sparkles className="h-5 w-5" />
+    <div className="chat-panel-shell flex h-full min-h-0 w-full flex-col border-l border-[var(--border)] bg-[var(--glass)] backdrop-blur-xl">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2.5">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Chat</p>
+          <p className="truncate font-display text-sm font-semibold text-[var(--text-primary)]">Room thread</p>
         </div>
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-sky-300/80">Room Chat</p>
-          <h3 className="font-display text-xl text-white">Fast conversation</h3>
-        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="theme-button-neutral rounded-lg border p-2"
+          aria-label="Collapse chat"
+        >
+          <PanelRightClose className="h-4 w-4" />
+        </button>
       </div>
 
-      <div ref={containerRef} className="flex-1 space-y-3 overflow-auto rounded-2xl border border-white/10 bg-surface-900/80 p-3">
-        {messages.length ? (
-          messages.map((entry) => (
-            <article key={entry.id} className="rounded-2xl bg-white/[0.04] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="font-medium text-white">{entry.username}</p>
-                <time className="text-xs text-slate-400">{formatTimestamp(entry.timestamp)}</time>
+      <div className="theme-chat-thread chat-feed min-h-0 flex-1 overflow-y-auto p-3">
+        {messages.length || visibleTypingUsers.length ? (
+          <div className="space-y-2">
+            {messages.map((entry) => {
+              const isCurrentUser = entry.userId === session.userId;
+              const participant = participantLookup.get(entry.userId);
+
+              return (
+                <ChatMessage key={entry.id} message={entry} isSelf={isCurrentUser} participant={participant} />
+              );
+            })}
+            {visibleTypingUsers.length ? (
+              <div className="theme-surface chat-typing rounded-xl border px-3 py-2 text-xs text-[var(--text-muted)]">
+                {visibleTypingUsers.map((participant) => participant.username).join(", ")} typing…
               </div>
-              <p className="mt-2 text-sm leading-6 text-slate-200">{entry.message}</p>
-            </article>
-          ))
+            ) : null}
+            <div ref={endRef} />
+          </div>
         ) : (
-          <div className="flex h-full min-h-[180px] items-center justify-center text-center text-sm text-slate-400">
-            Conversation in this room will appear here in real time.
+          <div className="flex h-full min-h-[120px] items-center justify-center text-center text-xs text-[var(--text-muted)]">
+            Messages appear here in real time.
           </div>
         )}
       </div>
 
-      <form onSubmit={submit} className="flex gap-3">
+      <form onSubmit={submit} className="theme-divider flex shrink-0 gap-2 border-t p-3">
         <input
           value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          placeholder="Drop a note for the room..."
-          className="flex-1 rounded-2xl border border-white/10 bg-surface-900 px-4 py-3 text-sm text-white outline-none transition focus:border-sky-400/40"
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            setMessage(nextValue);
+            emitTyping(Boolean(nextValue.trim()));
+          }}
+          onBlur={() => emitTyping(false)}
+          placeholder="Message…"
+          className="theme-input min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm outline-none"
         />
         <button
           type="submit"
-          className="inline-flex items-center justify-center rounded-2xl bg-sky-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-300"
+          className="theme-button-primary inline-flex shrink-0 items-center justify-center rounded-xl px-3 py-2 font-semibold"
+          aria-label="Send"
         >
           <Send className="h-4 w-4" />
         </button>
       </form>
-    </Panel>
+    </div>
   );
 };
-

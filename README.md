@@ -1,13 +1,12 @@
 # Code Sphere
 
-Code Sphere is a modern full-stack real-time collaborative coding platform built with React, Tailwind, Monaco Editor, Express, and Socket.io. It supports multiplayer rooms, live code sync, remote cursors, chat, code execution, and an optional AI analysis layer.
+Code Sphere is a modern full-stack real-time collaborative coding platform built with React, Tailwind, Monaco Editor, Express, and Socket.io. It supports multiplayer rooms, live code sync, remote cursors, chat, role-aware collaboration, and an optional AI analysis layer.
 
 ## Stack
 
 - Frontend: React + TypeScript + Vite + Tailwind + Monaco Editor
 - Backend: Node.js + Express + TypeScript
 - Real-time: Socket.io
-- Code execution: Piston API
 - AI layer: OpenAI Responses API when `OPENAI_API_KEY` is configured, with a graceful fallback mode otherwise
 
 ## Project Structure
@@ -43,9 +42,8 @@ Code Sphere is a modern full-stack real-time collaborative coding platform built
 - Remote cursors with usernames and active-line highlighting
 - Participant list with roles: owner, editor, viewer
 - Real-time room chat with timestamps
-- Run code through Piston and inspect output or errors
 - AI actions: Predict Output and Explain Code
-- Developer-style dark UI with responsive 3-column layout
+- Professional dark UI with responsive collaboration-focused layout
 
 ## Setup
 
@@ -96,4 +94,4 @@ npm run start
 - Room state is currently stored in memory on the backend, which keeps the project simple and modular for local development.
 - The AI layer analyzes code but does not execute it.
 - Language switching currently resets the editor to that language's starter template.
-- Piston and OpenAI require outbound network access when those actions are used.
+- OpenAI requires outbound network access when AI actions are used.

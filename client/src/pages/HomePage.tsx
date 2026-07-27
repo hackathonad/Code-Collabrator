@@ -1,20 +1,31 @@
-import { ArrowRight, Code2, MessageSquareText, Rocket, Users } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Clock3 } from "lucide-react";
+import { useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { AppLogo } from "../components/ui/AppLogo";
+import { ThemeToggle } from "../components/ui/ThemeToggle";
 import { api } from "../lib/api";
+import { formatRelativeTime } from "../lib/format";
 import { storage } from "../lib/storage";
-import type { SupportedLanguage } from "../types/collaboration";
+import type { RecentRoom, SupportedLanguage } from "../types/collaboration";
 
 export const HomePage = () => {
   const navigate = useNavigate();
+  const createCardRef = useRef<HTMLFormElement | null>(null);
+  const joinCardRef = useRef<HTMLFormElement | null>(null);
   const [username, setUsername] = useState("");
   const [roomId, setRoomId] = useState("");
   const [language, setLanguage] = useState<SupportedLanguage>("javascript");
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<"create" | "join" | null>(null);
+  const [loading, setLoading] = useState<string | null>(null);
+  const [recentRooms] = useState<RecentRoom[]>(() => storage.getRecentRooms());
 
-  const createRoom = async (event: React.FormEvent) => {
+  const createRoom = async (event: FormEvent) => {
     event.preventDefault();
+    if (!username.trim()) {
+      setError("Add your display name before creating a room.");
+      return;
+    }
+
     setLoading("create");
     setError(null);
 
@@ -29,8 +40,18 @@ export const HomePage = () => {
     }
   };
 
-  const joinRoom = async (event: React.FormEvent) => {
+  const joinRoom = async (event: FormEvent) => {
     event.preventDefault();
+    if (!username.trim()) {
+      setError("Add your display name before joining a room.");
+      return;
+    }
+
+    if (!roomId.trim()) {
+      setError("Enter a room ID to join.");
+      return;
+    }
+
     setLoading("join");
     setError(null);
 
@@ -46,58 +67,82 @@ export const HomePage = () => {
     }
   };
 
+  const rejoinRecentRoom = async (recentRoom: RecentRoom) => {
+    setLoading(`recent-${recentRoom.roomId}`);
+    setError(null);
+
+    try {
+      const existingSession = storage.getSession(recentRoom.roomId);
+      if (existingSession) {
+        storage.saveSession(existingSession);
+        navigate(`/room/${recentRoom.roomId}`);
+        return;
+      }
+
+      const { session } = await api.joinRoom(recentRoom.roomId, recentRoom.username);
+      storage.saveSession(session);
+      navigate(`/room/${session.roomId}`);
+    } catch (issue) {
+      setError(issue instanceof Error ? issue.message : "Unable to rejoin room");
+    } finally {
+      setLoading(null);
+    }
+  };
+
   return (
-    <main className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(14,165,233,0.22),_transparent_24%),radial-gradient(circle_at_bottom_right,_rgba(34,197,94,0.16),_transparent_18%),linear-gradient(180deg,_#020817_0%,_#07111f_40%,_#020617_100%)] px-4 py-8 text-white">
-      <div className="pointer-events-none absolute inset-0 opacity-70">
-        <div className="absolute left-10 top-16 h-48 w-48 rounded-full bg-sky-400/10 blur-3xl animate-float" />
-        <div className="absolute bottom-10 right-16 h-56 w-56 rounded-full bg-emerald-400/10 blur-3xl animate-float" />
-      </div>
-
-      <div className="relative mx-auto grid max-w-7xl gap-8 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="rounded-[36px] border border-white/10 bg-surface-800/75 p-8 shadow-panel backdrop-blur-xl">
-          <span className="inline-flex rounded-full border border-sky-400/20 bg-sky-400/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.35em] text-sky-200">
-            Real-Time Coding Platform
-          </span>
-          <h1 className="mt-6 max-w-3xl font-display text-5xl leading-tight text-white md:text-6xl">
-            Code together in a room that feels built for developers, not docs.
-          </h1>
-          <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-300">
-            Code Sphere pairs a live Monaco editor, multiplayer presence, chat, execution, and AI-assisted reasoning in one collaborative workspace.
-          </p>
-
-          <div className="mt-10 grid gap-4 md:grid-cols-2">
-            {[
-              { icon: Users, title: "Live Rooms", body: "Create rooms, invite teammates, and keep ownership + permissions inside the session." },
-              { icon: Code2, title: "Monaco Editing", body: "See synced code, remote cursors, and active lines while everyone works together." },
-              { icon: MessageSquareText, title: "Integrated Chat", body: "Stay in context with room chat and timestamps without leaving the editor." },
-              { icon: Rocket, title: "Run + Reason", body: "Execute JavaScript, Python, or C++ and use AI actions to predict or explain code." }
-            ].map((item) => (
-              <article key={item.title} className="rounded-3xl border border-white/10 bg-white/[0.04] p-5">
-                <item.icon className="h-8 w-8 text-sky-300" />
-                <h2 className="mt-4 font-display text-2xl text-white">{item.title}</h2>
-                <p className="mt-3 text-sm leading-7 text-slate-300">{item.body}</p>
-              </article>
-            ))}
+    <main className="theme-page-home min-h-screen px-4 py-6">
+      <div className="mx-auto flex max-w-6xl flex-col gap-8">
+        <nav className="theme-panel-solid motion-reveal motion-surface flex flex-col gap-4 rounded-2xl border px-5 py-4 shadow-[var(--shadow-soft)] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <AppLogo size={36} />
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-[var(--text-faint)]">Code Sphere</p>
+              <h1 className="mt-1 font-display text-2xl font-semibold text-[var(--text-primary)]">Real-time coding rooms</h1>
+            </div>
           </div>
-        </section>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <ThemeToggle />
+            <button
+              type="button"
+              onClick={() => createCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+              className="theme-button-neutral rounded-full border px-4 py-2 transition"
+            >
+              Create Room
+            </button>
+            <button
+              type="button"
+              onClick={() => joinCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
+              className="theme-button-neutral rounded-full border px-4 py-2 transition"
+            >
+              Join Room
+            </button>
+          </div>
+        </nav>
 
-        <section className="rounded-[36px] border border-white/10 bg-surface-800/80 p-6 shadow-panel backdrop-blur-xl">
-          <div className="grid gap-6">
-            <form onSubmit={createRoom} className="rounded-3xl border border-white/10 bg-surface-900/80 p-5">
-              <p className="text-xs uppercase tracking-[0.3em] text-sky-300/80">New Room</p>
-              <h2 className="mt-3 font-display text-3xl text-white">Create a session</h2>
+        <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid gap-4">
+            <div className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
+              <p className="text-xs uppercase tracking-[0.32em] text-sky-300/80">Identity</p>
+              <h2 className="mt-3 font-display text-4xl theme-text-primary">Start with your name</h2>
+              <p className="mt-2 text-sm theme-text-muted">Create or join a room, then start collaborating right away.</p>
+              <input
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                placeholder="Your display name"
+                className="theme-input mt-5 w-full rounded-2xl border px-4 py-3 outline-none transition"
+              />
+            </div>
 
-              <div className="mt-6 grid gap-4">
-                <input
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  placeholder="Your display name"
-                  className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-white outline-none transition focus:border-sky-400/40"
-                />
+            <form ref={createCardRef} onSubmit={createRoom} className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
+              <p className="text-xs uppercase tracking-[0.32em] text-sky-300/80">Create Room</p>
+              <h3 className="mt-3 font-display text-3xl theme-text-primary">Launch a fresh workspace</h3>
+              <p className="mt-2 text-sm theme-text-muted">Pick a starter language and open a room instantly.</p>
+
+              <div className="mt-5 grid gap-4">
                 <select
                   value={language}
                   onChange={(event) => setLanguage(event.target.value as SupportedLanguage)}
-                  className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-white outline-none transition focus:border-sky-400/40"
+                  className="theme-input rounded-2xl border px-4 py-3 outline-none transition"
                 >
                   <option value="javascript">JavaScript</option>
                   <option value="python">Python</option>
@@ -105,38 +150,98 @@ export const HomePage = () => {
                 </select>
                 <button
                   type="submit"
-                  disabled={!username.trim() || loading !== null}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-sky-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={loading !== null}
+                  className="group inline-flex items-center justify-center gap-2 rounded-2xl bg-sky-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading === "create" ? "Creating..." : "Create Room"}
-                  <ArrowRight className="h-4 w-4" />
+                  <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />
                 </button>
               </div>
             </form>
 
-            <form onSubmit={joinRoom} className="rounded-3xl border border-white/10 bg-surface-900/80 p-5">
-              <p className="text-xs uppercase tracking-[0.3em] text-emerald-300/80">Join Room</p>
-              <h2 className="mt-3 font-display text-3xl text-white">Enter an existing session</h2>
+            <form ref={joinCardRef} onSubmit={joinRoom} className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
+              <p className="text-xs uppercase tracking-[0.32em] text-emerald-300/80">Join Room</p>
+              <h3 className="mt-3 font-display text-3xl theme-text-primary">Return to an active session</h3>
+              <p className="mt-2 text-sm theme-text-muted">Paste a room ID and jump back into the editor.</p>
 
-              <div className="mt-6 grid gap-4">
+              <div className="mt-5 grid gap-4">
                 <input
                   value={roomId}
                   onChange={(event) => setRoomId(event.target.value)}
                   placeholder="Paste room ID"
-                  className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-white outline-none transition focus:border-emerald-400/40"
+                  className="theme-input rounded-2xl border px-4 py-3 outline-none transition"
                 />
                 <button
                   type="submit"
-                  disabled={!username.trim() || !roomId.trim() || loading !== null}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={loading !== null}
+                  className="group inline-flex items-center justify-center gap-2 rounded-2xl bg-emerald-400 px-4 py-3 font-semibold text-slate-950 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {loading === "join" ? "Joining..." : "Join Room"}
-                  <ArrowRight className="h-4 w-4" />
+                  <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />
                 </button>
               </div>
             </form>
 
             {error ? <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}
+          </div>
+
+          <div className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
+            <p className="text-xs uppercase tracking-[0.32em] text-sky-300/80">Why this app</p>
+            <h2 className="mt-3 font-display text-4xl theme-text-primary">Simple, live, and room-first</h2>
+            <div className="mt-5 grid gap-3">
+              <div className="theme-surface rounded-2xl border p-4">
+                <p className="font-semibold theme-text-primary">Join instantly</p>
+                <p className="mt-1 text-sm theme-text-muted">Re-enter a room with your saved session or recent history.</p>
+              </div>
+              <div className="theme-surface rounded-2xl border p-4">
+                <p className="font-semibold theme-text-primary">See teammates live</p>
+                <p className="mt-1 text-sm theme-text-muted">Presence, cursor labels, line highlights, and typing awareness stay visible while you code.</p>
+              </div>
+              <div className="theme-surface rounded-2xl border p-4">
+                <p className="font-semibold theme-text-primary">Stay focused</p>
+                <p className="mt-1 text-sm theme-text-muted">One editor, one run action, and one fast chat rail.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs uppercase tracking-[0.32em] text-sky-300/80">Recent Rooms</p>
+              <h3 className="mt-2 font-display text-3xl theme-text-primary">Quick rejoin</h3>
+              <p className="mt-2 text-sm theme-text-muted">Rooms you opened recently are kept locally for one-click access.</p>
+            </div>
+            <Clock3 className="h-5 w-5 text-sky-300" />
+          </div>
+
+          <div className="mt-6 grid gap-4">
+            {recentRooms.length ? (
+              recentRooms.map((recentRoom) => (
+                <article key={recentRoom.roomId} className="theme-surface motion-card flex flex-col gap-4 rounded-3xl border p-5 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <p className="font-medium theme-text-primary">{recentRoom.label}</p>
+                    <p className="mt-1 font-mono text-sm theme-text-secondary">{recentRoom.roomId}</p>
+                    <p className="mt-2 text-sm theme-text-muted">
+                      Last active {formatRelativeTime(recentRoom.lastVisitedAt)} as {recentRoom.username}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void rejoinRecentRoom(recentRoom)}
+                    disabled={loading !== null}
+                    className="theme-button-neutral group inline-flex items-center justify-center gap-2 rounded-2xl border px-4 py-3 font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {loading === `recent-${recentRoom.roomId}` ? "Joining..." : "Rejoin Room"}
+                    <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-0.5" />
+                  </button>
+                </article>
+              ))
+            ) : (
+              <div className="theme-surface-muted rounded-3xl border border-dashed p-6 text-sm theme-text-muted">
+                No recent rooms yet. Create a room or join one to keep it here for quick access.
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -1,4 +1,4 @@
-import type { AiAction, AiResult, ExecutionResult, RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
+import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -68,37 +68,5 @@ export const api = {
       room: payload.room,
       session
     };
-  },
-
-  async executeCode(code: string, language: SupportedLanguage) {
-    const response = await fetch(`${API_URL}/api/tools/execute`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        code,
-        language
-      })
-    });
-
-    return readJson<ExecutionResult>(response);
-  },
-
-  async analyzeCode(code: string, language: SupportedLanguage, action: AiAction) {
-    const response = await fetch(`${API_URL}/api/tools/ai`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        code,
-        language,
-        action
-      })
-    });
-
-    return readJson<AiResult>(response);
   }
 };
-

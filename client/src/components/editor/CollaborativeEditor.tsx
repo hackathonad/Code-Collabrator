@@ -3,16 +3,22 @@ import { useEffect, useMemo, useRef } from "react";
 import type * as MonacoEditor from "monaco-editor";
 import type { MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
+import { useTheme } from "../../context/ThemeContext";
 import { useRoomStore } from "../../store/useRoomStore";
-import type { Participant, UserSession } from "../../types/collaboration";
+import type { Participant, TypingParticipant, UserSession } from "../../types/collaboration";
+import { EditorToolbar } from "./EditorToolbar";
+import { configureMonaco } from "./monacoSetup";
 
 interface CollaborativeEditorProps {
   code: string;
   language: "javascript" | "python" | "cpp";
   participants: Participant[];
+  editorTypingUsers: TypingParticipant[];
   session: UserSession;
   roomId: string;
   socketRef: MutableRefObject<Socket | null>;
+  onChangeLanguage: (language: "javascript" | "python" | "cpp") => void;
+  isPaused: boolean;
 }
 
 const languageMap = {
@@ -21,40 +27,60 @@ const languageMap = {
   cpp: "cpp"
 } as const;
 
-export const CollaborativeEditor = ({ code, language, participants, session, roomId, socketRef }: CollaborativeEditorProps) => {
+export const CollaborativeEditor = ({
+  code,
+  language,
+  participants,
+  editorTypingUsers,
+  session,
+  roomId,
+  socketRef,
+  onChangeLanguage,
+  isPaused
+}: CollaborativeEditorProps) => {
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const ignoreSyncRef = useRef(false);
   const debounceRef = useRef<number | null>(null);
+  const cursorDebounceRef = useRef<number | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
+  const lastCursorRef = useRef("1:1");
+  const typingRef = useRef(false);
   const { setCode } = useRoomStore();
+  const { editorColorMode } = useTheme();
 
   const currentUser = participants.find((participant) => participant.userId === session.userId);
-  const canEdit = currentUser?.role !== "viewer";
+  const canEdit = currentUser?.role !== "viewer" && !isPaused;
 
   const remoteParticipants = useMemo(
     () => participants.filter((participant) => participant.userId !== session.userId && participant.isOnline),
     [participants, session.userId]
   );
 
+  const visibleTypingUsers = useMemo(
+    () => editorTypingUsers.filter((participant) => participant.userId !== session.userId),
+    [editorTypingUsers, session.userId]
+  );
+
+  const emitEditorTyping = (isTyping: boolean) => {
+    if (typingRef.current === isTyping) {
+      return;
+    }
+
+    typingRef.current = isTyping;
+    socketRef.current?.emit("editor:typing", {
+      roomId,
+      userId: session.userId,
+      isTyping
+    });
+  };
+
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
 
-    monaco.editor.defineTheme("code-sphere", {
-      base: "vs-dark",
-      inherit: true,
-      rules: [],
-      colors: {
-        "editor.background": "#08101c",
-        "editorLineNumber.foreground": "#4c5f75",
-        "editorLineNumber.activeForeground": "#e2e8f0",
-        "editorCursor.foreground": "#7dd3fc",
-        "editor.selectionBackground": "#0ea5e933"
-      }
-    });
-
-    monaco.editor.setTheme("code-sphere");
+    configureMonaco(monaco);
+    monaco.editor.setTheme(editorColorMode === "light" ? "code-sphere-light" : "code-sphere-dark");
 
     editor.onDidChangeModelContent(() => {
       if (ignoreSyncRef.current) {
@@ -63,6 +89,7 @@ export const CollaborativeEditor = ({ code, language, participants, session, roo
 
       const value = editor.getValue();
       setCode(value);
+      emitEditorTyping(true);
 
       if (debounceRef.current) {
         window.clearTimeout(debounceRef.current);
@@ -77,17 +104,51 @@ export const CollaborativeEditor = ({ code, language, participants, session, roo
       }, 70);
     });
 
-    editor.onDidChangeCursorSelection((event) => {
-      socketRef.current?.emit("editor:cursor", {
-        roomId,
-        userId: session.userId,
-        cursor: {
-          lineNumber: event.selection.positionLineNumber,
-          column: event.selection.positionColumn
-        }
-      });
+    editor.onDidChangeCursorPosition((event) => {
+      const nextCursor = {
+        lineNumber: event.position.lineNumber,
+        column: event.position.column
+      };
+      const signature = `${nextCursor.lineNumber}:${nextCursor.column}`;
+
+      if (lastCursorRef.current === signature) {
+        return;
+      }
+
+      lastCursorRef.current = signature;
+      if (cursorDebounceRef.current) {
+        window.clearTimeout(cursorDebounceRef.current);
+      }
+
+      cursorDebounceRef.current = window.setTimeout(() => {
+        socketRef.current?.emit("editor:cursor", {
+          roomId,
+          userId: session.userId,
+          cursor: nextCursor
+        });
+      }, 45);
+    });
+
+    editor.onDidBlurEditorText(() => {
+      emitEditorTyping(false);
     });
   };
+
+  useEffect(() => {
+    monacoRef.current?.editor.setTheme(editorColorMode === "light" ? "code-sphere-light" : "code-sphere-dark");
+  }, [editorColorMode]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    const model = editor?.getModel();
+
+    if (!editor || !monaco || !model) {
+      return;
+    }
+
+    monaco.editor.setModelLanguage(model, languageMap[language]);
+  }, [language]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -104,10 +165,32 @@ export const CollaborativeEditor = ({ code, language, participants, session, roo
     ignoreSyncRef.current = false;
   }, [code]);
 
+  useEffect(
+    () => () => {
+      if (debounceRef.current) {
+        window.clearTimeout(debounceRef.current);
+      }
+
+      if (cursorDebounceRef.current) {
+        window.clearTimeout(cursorDebounceRef.current);
+      }
+
+      if (typingRef.current) {
+        socketRef.current?.emit("editor:typing", {
+          roomId,
+          userId: session.userId,
+          isTyping: false
+        });
+      }
+    },
+    [roomId, session.userId, socketRef]
+  );
+
   useEffect(() => {
     const editor = editorRef.current;
     const monaco = monacoRef.current;
     const model = editor?.getModel();
+    const typingUserIds = new Set(visibleTypingUsers.map((participant) => participant.userId));
 
     if (!editor || !monaco || !model) {
       return;
@@ -117,8 +200,7 @@ export const CollaborativeEditor = ({ code, language, participants, session, roo
       const lineNumber = Math.min(Math.max(participant.cursor.lineNumber, 1), model.getLineCount());
       const maxColumn = model.getLineMaxColumn(lineNumber);
       const column = Math.min(Math.max(participant.cursor.column, 1), maxColumn);
-
-      return [
+      const decorations: MonacoEditor.editor.IModelDeltaDecoration[] = [
         {
           range: new monaco.Range(lineNumber, column, lineNumber, column),
           options: {
@@ -128,54 +210,68 @@ export const CollaborativeEditor = ({ code, language, participants, session, roo
               inlineClassName: `remote-cursor-label remote-cursor-label-${participant.accent}`
             }
           }
-        },
-        {
+        }
+      ];
+
+      if (typingUserIds.has(participant.userId)) {
+        decorations.push({
           range: new monaco.Range(lineNumber, 1, lineNumber, maxColumn),
           options: {
             isWholeLine: true,
             className: `remote-line-highlight remote-line-highlight-${participant.accent}`
           }
-        }
-      ];
+        });
+      }
+
+      return decorations;
     });
 
     decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, nextDecorations);
-  }, [remoteParticipants]);
+  }, [code, remoteParticipants, visibleTypingUsers]);
 
   return (
-    <div className="relative h-full overflow-hidden rounded-[28px] border border-white/10 bg-surface-900/90 shadow-panel">
-      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
-        <div>
-          <p className="text-xs uppercase tracking-[0.3em] text-sky-300/80">Live Editor</p>
-          <h3 className="font-display text-xl text-white">Multiplayer code canvas</h3>
-        </div>
-        <span
-          className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.3em] ${
-            canEdit ? "bg-emerald-400/15 text-emerald-200" : "bg-amber-400/15 text-amber-200"
-          }`}
-        >
-          {canEdit ? "Editing enabled" : "View only"}
-        </span>
-      </div>
-
-      <Editor
-        height="100%"
-        language={languageMap[language]}
-        value={code}
-        onMount={handleMount}
-        options={{
-          fontFamily: "IBM Plex Mono, monospace",
-          fontSize: 14,
-          minimap: { enabled: false },
-          padding: { top: 18 },
-          smoothScrolling: true,
-          cursorBlinking: "smooth",
-          renderWhitespace: "selection",
-          scrollBeyondLastLine: false,
-          readOnly: !canEdit
-        }}
+    <div className="theme-editor-shell relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--border)] shadow-[var(--shadow-soft)]">
+      <EditorToolbar
+        language={language}
+        canEdit={Boolean(canEdit)}
+        isPaused={isPaused}
+        editorTypingUsers={visibleTypingUsers}
+        onChangeLanguage={onChangeLanguage}
       />
+
+      <div className="min-h-0 flex-1 overflow-hidden px-1 pb-1 pt-0 sm:px-2 sm:pb-2">
+        <Editor
+          height="100%"
+          language={languageMap[language]}
+          value={code}
+          onMount={handleMount}
+          options={{
+            fontFamily: "IBM Plex Mono, monospace",
+            fontSize: 14,
+            minimap: { enabled: false },
+            padding: { top: 18 },
+            smoothScrolling: true,
+            cursorBlinking: "smooth",
+            renderWhitespace: "selection",
+            scrollBeyondLastLine: false,
+            fixedOverflowWidgets: true,
+            bracketPairColorization: {
+              enabled: true
+            },
+            guides: {
+              bracketPairs: true,
+              indentation: true,
+              highlightActiveIndentation: true
+            },
+            readOnly: !canEdit
+          }}
+        />
+        {isPaused ? (
+          <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur-md sm:inset-x-6 sm:bottom-6 sm:text-sm">
+            Editing is paused. Code is read-only until the owner resumes.
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 };
-

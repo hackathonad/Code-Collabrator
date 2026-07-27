@@ -2,7 +2,6 @@ import cors from "cors";
 import express from "express";
 import { env } from "./config/env";
 import roomRoutes from "./routes/roomRoutes";
-import toolRoutes from "./routes/toolRoutes";
 
 export const createApp = () => {
   const app = express();
@@ -21,8 +20,6 @@ export const createApp = () => {
   });
 
   app.use("/api/rooms", roomRoutes);
-  app.use("/api/tools", toolRoutes);
 
   return app;
 };
-

@@ -1,19 +1,23 @@
 import { create } from "zustand";
-import type { AiResult, ChatMessage, ExecutionResult, Participant, RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
+import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
+
+const upsertTypingParticipant = (participants: TypingParticipant[], participant: TypingParticipant, isTyping: boolean) => {
+  if (!isTyping) {
+    return participants.filter((entry) => entry.userId !== participant.userId);
+  }
+
+  return participants.some((entry) => entry.userId === participant.userId)
+    ? participants.map((entry) => (entry.userId === participant.userId ? participant : entry))
+    : [...participants, participant];
+};
 
 interface RoomStoreState {
   room: RoomSnapshot | null;
   session: UserSession | null;
   connectionStatus: "idle" | "connecting" | "connected" | "error";
   error: string | null;
-  execution: {
-    loading: boolean;
-    result: ExecutionResult | null;
-  };
-  ai: {
-    loading: boolean;
-    result: AiResult | null;
-  };
+  chatTypingUsers: TypingParticipant[];
+  editorTypingUsers: TypingParticipant[];
   setSession: (session: UserSession | null) => void;
   setRoom: (room: RoomSnapshot | null) => void;
   setConnectionStatus: (status: RoomStoreState["connectionStatus"]) => void;
@@ -22,11 +26,12 @@ interface RoomStoreState {
   setLanguage: (language: SupportedLanguage) => void;
   replaceParticipants: (participants: Participant[]) => void;
   upsertParticipant: (participant: Participant) => void;
+  updateParticipantCursor: (cursor: CursorUpdate) => void;
+  setHistory: (history: HistoryEntry[]) => void;
   appendMessage: (message: ChatMessage) => void;
-  setExecutionLoading: (loading: boolean) => void;
-  setExecutionResult: (result: ExecutionResult | null) => void;
-  setAiLoading: (loading: boolean) => void;
-  setAiResult: (result: AiResult | null) => void;
+  setChatTypingState: (participant: TypingParticipant, isTyping: boolean) => void;
+  setEditorTypingState: (participant: TypingParticipant, isTyping: boolean) => void;
+  clearTypingUsers: () => void;
 }
 
 export const useRoomStore = create<RoomStoreState>((set) => ({
@@ -34,16 +39,15 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
   session: null,
   connectionStatus: "idle",
   error: null,
-  execution: {
-    loading: false,
-    result: null
-  },
-  ai: {
-    loading: false,
-    result: null
-  },
+  chatTypingUsers: [],
+  editorTypingUsers: [],
   setSession: (session) => set({ session }),
-  setRoom: (room) => set({ room }),
+  setRoom: (room) =>
+    set({
+      room,
+      chatTypingUsers: [],
+      editorTypingUsers: []
+    }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   setError: (error) => set({ error }),
   setCode: (code, version) =>
@@ -85,6 +89,35 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
           }
         : null
     })),
+  updateParticipantCursor: (cursor) =>
+    set((state) => ({
+      room: state.room
+        ? {
+            ...state.room,
+            participants: state.room.participants.map((participant) =>
+              participant.userId === cursor.userId
+                ? {
+                    ...participant,
+                    username: cursor.username,
+                    cursor: {
+                      lineNumber: cursor.lineNumber,
+                      column: cursor.column
+                    }
+                  }
+                : participant
+            )
+          }
+        : null
+    })),
+  setHistory: (history) =>
+    set((state) => ({
+      room: state.room
+        ? {
+            ...state.room,
+            history
+          }
+        : null
+    })),
   appendMessage: (message) =>
     set((state) => ({
       room: state.room
@@ -94,32 +127,17 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
           }
         : null
     })),
-  setExecutionLoading: (loading) =>
+  setChatTypingState: (participant, isTyping) =>
     set((state) => ({
-      execution: {
-        ...state.execution,
-        loading
-      }
+      chatTypingUsers: upsertTypingParticipant(state.chatTypingUsers, participant, isTyping)
     })),
-  setExecutionResult: (result) =>
-    set({
-      execution: {
-        loading: false,
-        result
-      }
-    }),
-  setAiLoading: (loading) =>
+  setEditorTypingState: (participant, isTyping) =>
     set((state) => ({
-      ai: {
-        ...state.ai,
-        loading
-      }
+      editorTypingUsers: upsertTypingParticipant(state.editorTypingUsers, participant, isTyping)
     })),
-  setAiResult: (result) =>
+  clearTypingUsers: () =>
     set({
-      ai: {
-        loading: false,
-        result
-      }
+      chatTypingUsers: [],
+      editorTypingUsers: []
     })
 }));

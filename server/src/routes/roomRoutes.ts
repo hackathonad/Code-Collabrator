@@ -54,6 +54,36 @@ router.get("/:roomId", (request, response) => {
   }
 });
 
+router.get("/:roomId/history", (request, response) => {
+  try {
+    response.json(roomStore.getRoomSnapshot(request.params.roomId).history);
+  } catch (error) {
+    response.status(404).json({
+      message: error instanceof Error ? error.message : "Room not found"
+    });
+  }
+});
+
+router.post("/:roomId/history/:historyId/restore", (request, response) => {
+  const userId = String(request.body?.userId ?? "");
+
+  if (!userId) {
+    response.status(400).json({
+      message: "User ID is required"
+    });
+    return;
+  }
+
+  try {
+    const restored = roomStore.restoreHistoryEntry(request.params.roomId, userId, request.params.historyId);
+    response.json(restored);
+  } catch (error) {
+    response.status(403).json({
+      message: error instanceof Error ? error.message : "Unable to restore room history"
+    });
+  }
+});
+
 router.delete("/:roomId", (request, response) => {
   const userId = String(request.query.userId ?? "");
 
@@ -68,4 +98,3 @@ router.delete("/:roomId", (request, response) => {
 });
 
 export default router;
-

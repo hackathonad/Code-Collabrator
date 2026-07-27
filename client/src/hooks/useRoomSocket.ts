@@ -3,7 +3,7 @@ import { io, type Socket } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 import { storage } from "../lib/storage";
 import { useRoomStore } from "../store/useRoomStore";
-import type { ChatMessage, Participant, RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
+import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL ?? "http://localhost:4000";
 
@@ -17,6 +17,11 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     replaceParticipants,
     appendMessage,
     upsertParticipant,
+    updateParticipantCursor,
+    setHistory,
+    setChatTypingState,
+    setEditorTypingState,
+    clearTypingUsers,
     setCode,
     setLanguage
   } = useRoomStore();
@@ -59,8 +64,36 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       upsertParticipant(participant);
     });
 
+    socket.on("cursor-update", (cursor: CursorUpdate) => {
+      updateParticipantCursor(cursor);
+    });
+
+    socket.on("history:update", (history: HistoryEntry[]) => {
+      setHistory(history);
+    });
+
     socket.on("chat:new", (message: ChatMessage) => {
       appendMessage(message);
+    });
+
+    socket.on("chat:typing", (payload: TypingParticipant & { isTyping: boolean }) => {
+      setChatTypingState(
+        {
+          userId: payload.userId,
+          username: payload.username
+        },
+        payload.isTyping
+      );
+    });
+
+    socket.on("editor:typing", (payload: TypingParticipant & { isTyping: boolean }) => {
+      setEditorTypingState(
+        {
+          userId: payload.userId,
+          username: payload.username
+        },
+        payload.isTyping
+      );
     });
 
     socket.on("editor:sync", (payload: { code: string; language: SupportedLanguage; version: number }) => {
@@ -78,10 +111,28 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     });
 
     return () => {
+      clearTypingUsers();
       socket.disconnect();
       socketRef.current = null;
     };
-  }, [appendMessage, navigate, replaceParticipants, roomId, session, setCode, setConnectionStatus, setError, setLanguage, setRoom, upsertParticipant]);
+  }, [
+    appendMessage,
+    clearTypingUsers,
+    navigate,
+    replaceParticipants,
+    roomId,
+    session,
+    setCode,
+    setConnectionStatus,
+    setError,
+    setHistory,
+    setLanguage,
+    setRoom,
+    setChatTypingState,
+    setEditorTypingState,
+    updateParticipantCursor,
+    upsertParticipant
+  ]);
 
   return socketRef;
 };
