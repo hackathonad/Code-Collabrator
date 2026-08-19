@@ -2,6 +2,8 @@
 
 Code Collaborator is a modern full-stack realtime collaborative coding platform built with React, Tailwind, Monaco Editor, Express, and Socket.IO. It supports multiplayer rooms, multi-file workspaces, live code sync, remote cursors, chat, role-aware collaboration, optional AI assistance, GitHub connection foundations, and optional voice/video.
 
+**Live project:** [Open Code Collaborator](https://code-collabrator-client.vercel.app/) | [GitHub repository](https://github.com/hackathonad/Code-Collabrator)
+
 ## Stack
 
 - Frontend: React + TypeScript + Vite + Tailwind + Monaco Editor
