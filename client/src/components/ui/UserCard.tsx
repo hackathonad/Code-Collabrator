@@ -1,5 +1,6 @@
-import { Crown } from "lucide-react";
-import type { Participant } from "../../types/collaboration";
+import { Camera, Crown, Mic, MicOff, MonitorUp, Phone, Volume2 } from "lucide-react";
+import type { Participant, RoomRole } from "../../types/collaboration";
+import type { MediaParticipant } from "../../types/media";
 import { formatRelativeTime, titleCase } from "../../lib/format";
 
 export interface UserCardProps {
@@ -9,7 +10,8 @@ export interface UserCardProps {
   isRoomOwner: boolean;
   typingUserIds: Set<string>;
   canChangeRole: boolean;
-  onChangeRole?: (userId: string, role: "editor" | "viewer") => void;
+  media?: MediaParticipant | null;
+  onChangeRole?: (userId: string, role: Exclude<RoomRole, "owner">) => void;
 }
 
 const statusLabel = (participant: Participant) => {
@@ -32,7 +34,7 @@ const statusDescription = (participant: Participant, typingUserIds: Set<string>)
   return `Last active ${formatRelativeTime(participant.lastActiveAt)}`;
 };
 
-export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canChangeRole, onChangeRole }: UserCardProps) => {
+export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canChangeRole, onChangeRole, media = null }: UserCardProps) => {
   const initials = participant.username
     .split(/\s+/)
     .map((part) => part[0])
@@ -73,6 +75,7 @@ export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canC
             Line {participant.cursor.lineNumber}, col {participant.cursor.column}
           </p>
           <p className="mt-0.5 text-xs text-[var(--text-faint)]">{statusDescription(participant, typingUserIds)}</p>
+          {media ? <p className="mt-1 flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]"><Phone className="h-3 w-3 text-[var(--accent)]" aria-label="In call" />In call {media.microphoneEnabled ? <Mic className="h-3 w-3" aria-label="Microphone on" /> : <MicOff className="h-3 w-3" aria-label="Microphone off" />}{media.cameraEnabled ? <Camera className="h-3 w-3" aria-label="Camera on" /> : null}{media.screenShareEnabled ? <MonitorUp className="h-3 w-3" aria-label="Screen sharing" /> : null}{media.isSpeaking ? <Volume2 className="h-3 w-3 text-emerald-300" aria-label="Speaking" /> : null}</p> : null}
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           <span
@@ -89,11 +92,12 @@ export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canC
         {canChangeRole && onChangeRole ? (
           <select
             value={participant.role}
-            onChange={(event) => onChangeRole(participant.userId, event.target.value as "editor" | "viewer")}
+            onChange={(event) => onChangeRole(participant.userId, event.target.value as Exclude<RoomRole, "owner">)}
             className="theme-input max-w-[7rem] rounded-lg border px-2 py-1 text-xs outline-none"
           >
-            <option value="editor">Editor</option>
-            <option value="viewer">Viewer</option>
+            <option value="moderator">Moderator</option>
+            <option value="member">Member</option>
+            <option value="guest">Guest</option>
           </select>
         ) : null}
       </div>

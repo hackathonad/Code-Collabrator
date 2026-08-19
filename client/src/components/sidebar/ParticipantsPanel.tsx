@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import { SidebarItem } from "../ui/SidebarItem";
 import { UserCard } from "../ui/UserCard";
-import type { Participant, TypingParticipant, UserSession } from "../../types/collaboration";
+import type { Participant, RoomRole, TypingParticipant, UserSession } from "../../types/collaboration";
+import { useMediaStore } from "../../store/useMediaStore";
 
 interface ParticipantsPanelProps {
   participants: Participant[];
@@ -28,6 +29,8 @@ export const ParticipantsPanel = ({
   const isOwner = ownerId === session.userId;
   const onlineParticipants = participants.filter((participant) => participant.isOnline).length;
   const typingUserIds = useMemo(() => new Set(editorTypingUsers.map((participant) => participant.userId)), [editorTypingUsers]);
+  const mediaParticipants = useMediaStore((state) => state.participants);
+  const mediaByParticipantId = useMemo(() => new Map(mediaParticipants.map((participant) => [participant.identity, participant])), [mediaParticipants]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -42,7 +45,7 @@ export const ParticipantsPanel = ({
     onNotify("Invite link copied");
   };
 
-  const updateRole = (targetUserId: string, role: "editor" | "viewer") => {
+  const updateRole = (targetUserId: string, role: Exclude<RoomRole, "owner">) => {
     socketRef.current?.emit("room:role", {
       roomId,
       actingUserId: session.userId,
@@ -97,6 +100,7 @@ export const ParticipantsPanel = ({
             isSelf={participant.userId === session.userId}
             isRoomOwner={participant.userId === ownerId}
             typingUserIds={typingUserIds}
+            media={mediaByParticipantId.get(participant.userId) ?? null}
             canChangeRole={isOwner && participant.userId !== ownerId}
             onChangeRole={updateRole}
           />

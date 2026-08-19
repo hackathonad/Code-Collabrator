@@ -7,12 +7,15 @@ import {
   Play,
   RotateCcw,
   Settings,
+  Sparkles,
   Zap
 } from "lucide-react";
 import type { MouseEvent } from "react";
 import { THEME_LABELS, useTheme } from "../../context/ThemeContext";
 import { AppLogo } from "../ui/AppLogo";
 import { ToolbarButton } from "../ui/ToolbarButton";
+import { MediaCallButton } from "../media/MediaCallButton";
+import type { UserSession } from "../../types/collaboration";
 
 interface RoomToolbarProps {
   roomId: string;
@@ -21,7 +24,11 @@ interface RoomToolbarProps {
   isOwner: boolean;
   activeParticipants: number;
   chatOpen: boolean;
+  aiOpen: boolean;
+  session: UserSession;
+  onOpenMedia: () => void;
   onToggleChat: () => void;
+  onToggleAI: () => void;
   onCopyCode: () => void;
   onRun: () => void;
   onPauseToggle: () => void;
@@ -37,7 +44,11 @@ export const RoomToolbar = ({
   isOwner,
   activeParticipants,
   chatOpen,
+  aiOpen,
+  session,
+  onOpenMedia,
   onToggleChat,
+  onToggleAI,
   onCopyCode,
   onRun,
   onPauseToggle,
@@ -97,11 +108,11 @@ export const RoomToolbar = ({
           title={!isOwner ? "Only the room owner can pause" : undefined}
         />
         <ToolbarButton
-          label="Restart"
+          label="Reset code"
           icon={<RotateCcw />}
           onClick={onRestart}
           disabled={!isOwner}
-          title={!isOwner ? "Only the room owner can restart" : undefined}
+          title={!isOwner ? "Only the room owner can reset code" : "Restore the selected language boilerplate"}
         />
         <span className="hidden h-6 w-px shrink-0 bg-[var(--border)] md:block" aria-hidden />
         <ToolbarButton
@@ -112,6 +123,13 @@ export const RoomToolbar = ({
           title="Cycle theme · middle-click opens settings"
         />
         <ToolbarButton label="Settings" icon={<Settings />} onClick={onOpenSettings} />
+        <MediaCallButton roomId={roomId} session={session} onOpenPanel={onOpenMedia} />
+        <ToolbarButton
+          label={aiOpen ? "Hide AI" : "AI Assistant"}
+          icon={<Sparkles />}
+          onClick={onToggleAI}
+          accent={aiOpen}
+        />
         <ToolbarButton
           label={chatOpen ? "Hide chat" : "Chat"}
           icon={<MessageSquare />}

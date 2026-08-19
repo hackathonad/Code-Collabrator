@@ -22,7 +22,10 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
     () => new Map(participants.map((participant) => [participant.userId, participant])),
     [participants]
   );
-  const visibleTypingUsers = typingUsers.filter((participant) => participant.userId !== session.userId);
+  const visibleTypingUsers = useMemo(
+    () => typingUsers.filter((participant) => participant.userId !== session.userId),
+    [typingUsers, session.userId]
+  );
 
   useEffect(() => {
     endRef.current?.scrollIntoView({
@@ -103,7 +106,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
             })}
             {visibleTypingUsers.length ? (
               <div className="theme-surface chat-typing rounded-xl border px-3 py-2 text-xs text-[var(--text-muted)]">
-                {visibleTypingUsers.map((participant) => participant.username).join(", ")} typing…
+                {visibleTypingUsers.map((participant) => participant.username).join(", ")} typing...
               </div>
             ) : null}
             <div ref={endRef} />
@@ -124,7 +127,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
             emitTyping(Boolean(nextValue.trim()));
           }}
           onBlur={() => emitTyping(false)}
-          placeholder="Message…"
+          placeholder="Message..."
           className="theme-input min-w-0 flex-1 rounded-xl border px-3 py-2 text-sm outline-none"
         />
         <button
@@ -138,3 +141,4 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
     </div>
   );
 };
+

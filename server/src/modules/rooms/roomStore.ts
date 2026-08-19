@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+﻿import { randomBytes, randomUUID } from "node:crypto";
 import { LANGUAGE_CONFIG, type SupportedLanguage } from "../../constants/languages";
 import type {
   ChatMessage,
@@ -11,15 +11,35 @@ import type {
   PresenceStatus,
   RoomRole,
   RoomSnapshot,
-  RoomState
+  RoomState,
+  WorkspaceOperation,
+  UserIdentityKind
 } from "./roomTypes";
+import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, updateWorkspaceFileContent } from "./workspaceService";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
 const MAX_HISTORY_ENTRIES = 30;
+const MAX_CHAT_MESSAGES = 100;
 const AUTO_SAVE_INTERVAL_MS = 20_000;
 
-const createRoomId = () => randomBytes(4).toString("hex");
+interface ParticipantOptions {
+  userId?: string;
+  identityKind?: UserIdentityKind;
+  avatarUrl?: string | null;
+}
+
+const createRoomId = () => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const roomId = randomBytes(4).toString("hex");
+    if (!rooms.has(roomId)) {
+      return roomId;
+    }
+  }
+
+  return randomBytes(8).toString("hex").slice(0, 8);
+};
+
 const createUserId = () => randomUUID();
 
 const defaultCursor = (): CursorState => ({
@@ -38,6 +58,9 @@ const nextAccent = (participants: Record<string, Participant>): ParticipantAccen
 const serializeParticipant = (participant: Participant): ParticipantSnapshot => ({
   userId: participant.userId,
   username: participant.username,
+  displayName: participant.displayName ?? participant.username,
+  avatarUrl: participant.avatarUrl ?? null,
+  identityKind: participant.identityKind ?? "guest",
   role: participant.role,
   accent: participant.accent,
   joinedAt: participant.joinedAt,
@@ -62,25 +85,44 @@ const serializeRoom = (room: RoomState): RoomSnapshot => ({
   updatedAt: room.updatedAt,
   participants: sortParticipants(room.participants).map(serializeParticipant),
   chat: [...room.chat].sort((left, right) => left.timestamp - right.timestamp),
-  history: [...room.history].sort((left, right) => right.createdAt - left.createdAt)
+  history: [...room.history].sort((left, right) => right.createdAt - left.createdAt),
+  workspace: room.workspace,
+  deletedAt: room.deletedAt
 });
+
+const syncLegacyEditorProjection = (room: RoomState) => {
+  const file = activeWorkspaceFile(room.workspace);
+  if (!file) return;
+  room.code = file.content;
+  room.language = file.language;
+  room.workspace.language = file.language;
+};
 
 const ensureRoom = (roomId: string) => {
   const room = rooms.get(roomId);
-  if (!room) {
+  if (!room || room.deletedAt) {
     throw new Error("Room not found");
   }
   return room;
 };
 
+const canEditCode = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
+const canManageContent = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member";
+
 const transferOwnershipIfNeeded = (room: RoomState) => {
+  for (const participant of Object.values(room.participants)) {
+    if (participant.userId !== room.ownerId && participant.role === "owner") {
+      participant.role = participant.identityKind === "guest" ? "guest" : "member";
+    }
+  }
+
   const owner = room.participants[room.ownerId];
   if (owner?.isOnline) {
     owner.role = "owner";
     return;
   }
 
-  const nextOwner = sortParticipants(room.participants).find((participant) => participant.isOnline);
+  const nextOwner = sortParticipants(room.participants).find((participant) => participant.isOnline && participant.identityKind === "member");
   if (!nextOwner) {
     return;
   }
@@ -114,6 +156,8 @@ const addHistoryEntry = (
     language?: SupportedLanguage;
     roomVersion?: number;
     createdAt?: number;
+    workspaceOperation?: WorkspaceOperation["type"];
+    fileId?: string;
   }
 ) => {
   const createdAt = options?.createdAt ?? Date.now();
@@ -125,7 +169,9 @@ const addHistoryEntry = (
     createdAt,
     createdByUserId: participant.userId,
     createdByUsername: participant.username,
-    reason
+    reason,
+    workspaceOperation: options?.workspaceOperation,
+    fileId: options?.fileId
   };
 
   room.history = [entry, ...room.history].slice(0, MAX_HISTORY_ENTRIES);
@@ -145,28 +191,34 @@ const maybeAddAutosaveEntry = (room: RoomState, participant: Pick<Participant, "
   return addHistoryEntry(room, participant, "autosave");
 };
 
-export const roomStore = {
-  createRoom(username: string, language: SupportedLanguage = "javascript") {
-    const roomId = createRoomId();
-    const userId = createUserId();
-    const now = Date.now();
-    const owner: Participant = {
-      userId,
-      username,
-      role: "owner",
-      accent: accentPalette[0],
-      joinedAt: now,
-      isOnline: false,
-      status: "offline",
-      lastActiveAt: now,
-      cursor: defaultCursor(),
-      editsCount: 0,
-      timeSpentMs: 0
-    };
+const createParticipant = (username: string, role: RoomRole, accent: ParticipantAccent, options?: ParticipantOptions): Participant => {
+  const now = Date.now();
+  return {
+    userId: options?.userId ?? createUserId(),
+    username,
+    displayName: username,
+    avatarUrl: options?.avatarUrl ?? null,
+    identityKind: options?.identityKind ?? "guest",
+    role,
+    accent,
+    joinedAt: now,
+    isOnline: false,
+    status: "offline",
+    lastActiveAt: now,
+    cursor: defaultCursor(),
+    editsCount: 0,
+    timeSpentMs: 0
+  };
+};
 
+export const roomStore = {
+  createRoom(username: string, language: SupportedLanguage = "javascript", options?: ParticipantOptions) {
+    const roomId = createRoomId();
+    const owner = createParticipant(username, "owner", accentPalette[0], options);
+    const now = owner.joinedAt;
     const room: RoomState = {
       roomId,
-      ownerId: userId,
+      ownerId: owner.userId,
       language,
       code: LANGUAGE_CONFIG[language].starter,
       isPaused: false,
@@ -174,10 +226,12 @@ export const roomStore = {
       createdAt: now,
       updatedAt: now,
       participants: {
-        [userId]: owner
+        [owner.userId]: owner
       },
       chat: [],
-      history: []
+      history: [],
+      workspace: createWorkspace(owner.userId, roomId, language, LANGUAGE_CONFIG[language].starter, `Room ${roomId}`),
+      appliedWorkspaceOperationIds: []
     };
 
     addHistoryEntry(room, owner, "initial", {
@@ -192,14 +246,18 @@ export const roomStore = {
     };
   },
 
-  joinRoom(roomId: string, username: string, existingUserId?: string) {
+  joinRoom(roomId: string, username: string, existingUserId?: string, options?: ParticipantOptions) {
     const room = ensureRoom(roomId);
     const now = Date.now();
+    const requestedUserId = options?.userId ?? existingUserId;
+    const existingParticipant = requestedUserId ? room.participants[requestedUserId] : undefined;
 
-    const existingParticipant = existingUserId ? room.participants[existingUserId] : undefined;
     if (existingParticipant) {
       finalizeSessionTime(existingParticipant, now);
       existingParticipant.username = username;
+      existingParticipant.displayName = username;
+      existingParticipant.avatarUrl = options?.avatarUrl ?? existingParticipant.avatarUrl;
+      existingParticipant.identityKind = options?.identityKind ?? existingParticipant.identityKind;
       existingParticipant.isOnline = false;
       existingParticipant.status = "offline";
       room.updatedAt = now;
@@ -209,22 +267,9 @@ export const roomStore = {
       };
     }
 
-    const userId = createUserId();
-    const participant: Participant = {
-      userId,
-      username,
-      role: "editor",
-      accent: nextAccent(room.participants),
-      joinedAt: now,
-      isOnline: false,
-      status: "offline",
-      lastActiveAt: now,
-      cursor: defaultCursor(),
-      editsCount: 0,
-      timeSpentMs: 0
-    };
-
-    room.participants[userId] = participant;
+    const identityKind = options?.identityKind ?? "guest";
+    const participant = createParticipant(username, identityKind === "guest" ? "guest" : "member", nextAccent(room.participants), options);
+    room.participants[participant.userId] = participant;
     room.updatedAt = now;
 
     return {
@@ -242,6 +287,12 @@ export const roomStore = {
 
     participant.isOnline = true;
     participant.status = "idle";
+    for (const otherParticipant of Object.values(room.participants)) {
+      if (otherParticipant.userId !== userId && otherParticipant.socketId === socketId) {
+        otherParticipant.socketId = undefined;
+      }
+    }
+
     participant.socketId = socketId;
     participant.lastActiveAt = Date.now();
     participant.activeSessionStartedAt ??= participant.lastActiveAt;
@@ -249,14 +300,18 @@ export const roomStore = {
     return serializeRoom(room);
   },
 
-  disconnectParticipant(roomId: string, userId: string) {
+  disconnectParticipant(roomId: string, userId: string, socketId?: string) {
     const room = rooms.get(roomId);
-    if (!room) {
+    if (!room || room.deletedAt) {
       return null;
     }
 
     const participant = room.participants[userId];
     if (!participant) {
+      return serializeRoom(room);
+    }
+
+    if (socketId && participant.socketId && participant.socketId !== socketId) {
       return serializeRoom(room);
     }
 
@@ -270,20 +325,22 @@ export const roomStore = {
     return serializeRoom(room);
   },
 
-  updateCode(roomId: string, userId: string, code: string) {
+  updateCode(roomId: string, userId: string, code: string, fileId?: string) {
     const room = ensureRoom(roomId);
     const participant = room.participants[userId];
     if (!participant) {
       throw new Error("Participant not found");
     }
-    if (participant.role === "viewer") {
+    if (!canEditCode(participant.role)) {
       throw new Error("Permission denied");
     }
     if (room.isPaused) {
       throw new Error("Room editing is paused");
     }
 
-    room.code = code;
+    const file = updateWorkspaceFileContent(room.workspace, fileId, code, userId);
+    room.workspace.activeFileId = file.id;
+    syncLegacyEditorProjection(room);
     room.version += 1;
     participant.editsCount += 1;
     touchParticipantActivity(participant, room);
@@ -301,17 +358,20 @@ export const roomStore = {
     if (!participant) {
       throw new Error("Participant not found");
     }
-    if (participant.role === "viewer") {
+    if (!canManageContent(participant.role)) {
       throw new Error("Permission denied");
     }
     if (room.isPaused) {
       throw new Error("Room editing is paused");
     }
 
-    room.language = language;
-    if (resetCode) {
-      room.code = LANGUAGE_CONFIG[language].starter;
-    }
+    const activeFile = activeWorkspaceFile(room.workspace);
+    if (!activeFile) throw new Error("Workspace has no active file");
+    activeFile.language = language;
+    if (resetCode) activeFile.content = LANGUAGE_CONFIG[language].starter;
+    activeFile.updatedAt = Date.now();
+    activeFile.updatedByUserId = userId;
+    syncLegacyEditorProjection(room);
     room.version += 1;
     touchParticipantActivity(participant, room);
     const historyEntry = addHistoryEntry(room, participant, "language-change");
@@ -351,7 +411,7 @@ export const roomStore = {
       timestamp: Date.now()
     };
 
-    room.chat.push(chatMessage);
+    room.chat = [...room.chat, chatMessage].slice(-MAX_CHAT_MESSAGES);
     touchParticipantActivity(participant, room);
     return chatMessage;
   },
@@ -365,6 +425,10 @@ export const roomStore = {
     const target = room.participants[targetUserId];
     if (!target) {
       throw new Error("Participant not found");
+    }
+
+    if (target.userId === room.ownerId) {
+      throw new Error("Owner role cannot be changed");
     }
 
     target.role = role;
@@ -400,7 +464,13 @@ export const roomStore = {
       addHistoryEntry(room, participant, "checkpoint");
     }
 
-    room.code = "";
+    const activeFile = activeWorkspaceFile(room.workspace);
+    if (activeFile) {
+      activeFile.content = LANGUAGE_CONFIG[activeFile.language].starter;
+      activeFile.updatedAt = Date.now();
+      activeFile.updatedByUserId = actingUserId;
+    }
+    syncLegacyEditorProjection(room);
     room.version += 1;
     room.updatedAt = Date.now();
 
@@ -423,7 +493,7 @@ export const roomStore = {
     if (!participant) {
       throw new Error("Participant not found");
     }
-    if (participant.role === "viewer") {
+    if (!canManageContent(participant.role)) {
       throw new Error("Permission denied");
     }
     if (room.isPaused) {
@@ -440,8 +510,14 @@ export const roomStore = {
       addHistoryEntry(room, participant, "checkpoint");
     }
 
-    room.code = entry.code;
-    room.language = entry.language;
+    const activeFile = activeWorkspaceFile(room.workspace);
+    if (activeFile) {
+      activeFile.content = entry.code;
+      activeFile.language = entry.language;
+      activeFile.updatedAt = Date.now();
+      activeFile.updatedByUserId = actingUserId;
+    }
+    syncLegacyEditorProjection(room);
     room.version += 1;
     touchParticipantActivity(participant, room);
     const historyEntry = addHistoryEntry(room, participant, "restore");
@@ -459,11 +535,27 @@ export const roomStore = {
       throw new Error("Only the owner can delete the room");
     }
 
+    room.deletedAt = Date.now();
     rooms.delete(roomId);
   },
 
   getRoomSnapshot(roomId: string) {
     return serializeRoom(ensureRoom(roomId));
+  },
+
+  applyWorkspaceOperation(roomId: string, userId: string, operation: WorkspaceOperation) {
+    const room = ensureRoom(roomId);
+    const participant = room.participants[userId];
+    if (!participant || !canManageContent(participant.role)) throw new Error("Permission denied");
+    if (room.isPaused) throw new Error("Room editing is paused");
+    if (room.appliedWorkspaceOperationIds.includes(operation.id)) return { room: serializeRoom(room), duplicate: true };
+    const activeFile = applyWorkspaceOperation(room.workspace, operation, userId);
+    syncLegacyEditorProjection(room);
+    room.version += 1;
+    touchParticipantActivity(participant, room);
+    room.appliedWorkspaceOperationIds = [...room.appliedWorkspaceOperationIds, operation.id].slice(-250);
+    addHistoryEntry(room, participant, "checkpoint", { workspaceOperation: operation.type, fileId: activeFile?.id, code: room.code, language: room.language });
+    return { room: serializeRoom(room), duplicate: false };
   },
 
   setParticipantStatus(roomId: string, userId: string, status: PresenceStatus) {
@@ -511,5 +603,28 @@ export const roomStore = {
 
   hasRoom(roomId: string) {
     return rooms.has(roomId);
+  },
+
+  upsertRoomSnapshot(snapshot: RoomSnapshot) {
+    const participants = Object.fromEntries(
+      snapshot.participants.map((participant) => [
+        participant.userId,
+        {
+          ...participant,
+          displayName: participant.displayName ?? participant.username,
+          avatarUrl: participant.avatarUrl ?? null,
+          identityKind: participant.identityKind ?? "guest",
+          isOnline: false,
+          status: "offline" as const,
+          socketId: undefined,
+          activeSessionStartedAt: undefined
+        }
+      ])
+    );
+
+    const workspace = snapshot.workspace ?? createWorkspace(snapshot.ownerId, snapshot.roomId, snapshot.language, snapshot.code, `Room ${snapshot.roomId}`);
+    rooms.set(snapshot.roomId, { ...snapshot, workspace, participants, appliedWorkspaceOperationIds: [] });
+
+    return serializeRoom(ensureRoom(snapshot.roomId));
   }
 };

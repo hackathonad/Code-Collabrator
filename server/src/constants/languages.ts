@@ -10,33 +10,31 @@ export const LANGUAGE_CONFIG: Record<SupportedLanguage, LanguageConfig> = {
   javascript: {
     id: "javascript",
     label: "JavaScript",
-    starter: `function solve() {
-  const greeting = "Hello from Code Sphere";
-  console.log(greeting);
+    starter: `function main() {
+
 }
 
-solve();
+main();
 `
   },
   python: {
     id: "python",
     label: "Python",
-    starter: `def solve():
-    greeting = "Hello from Code Sphere"
-    print(greeting)
+    starter: `def main():
+    pass
 
-solve()
+if __name__ == "__main__":
+    main()
 `
   },
   cpp: {
     id: "cpp",
     label: "C++",
     starter: `#include <iostream>
-using namespace std;
 
 int main() {
-  cout << "Hello from Code Sphere" << endl;
-  return 0;
+
+    return 0;
 }
 `
   }

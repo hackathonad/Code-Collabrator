@@ -1,6 +1,7 @@
-import type { SupportedLanguage } from "../../constants/languages";
+﻿import type { SupportedLanguage } from "../../constants/languages";
 
-export type RoomRole = "owner" | "editor" | "viewer";
+export type RoomRole = "owner" | "moderator" | "member" | "guest";
+export type UserIdentityKind = "guest" | "member";
 export type ParticipantAccent = "blue" | "emerald" | "amber" | "rose" | "violet" | "cyan";
 export type PresenceStatus = "active" | "idle" | "offline";
 
@@ -12,6 +13,9 @@ export interface CursorState {
 export interface ParticipantSnapshot {
   userId: string;
   username: string;
+  displayName: string;
+  avatarUrl: string | null;
+  identityKind: UserIdentityKind;
   role: RoomRole;
   accent: ParticipantAccent;
   joinedAt: number;
@@ -44,6 +48,84 @@ export type HistoryReason =
   | "restore"
   | "checkpoint";
 
+export type WorkspaceNodeKind = "file" | "folder";
+
+export interface WorkspaceFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  createdByUserId: string;
+}
+
+export interface WorkspaceFile {
+  id: string;
+  name: string;
+  parentId: string;
+  extension: string;
+  language: SupportedLanguage;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+  createdByUserId: string;
+  updatedByUserId: string;
+}
+
+export interface WorkspaceTrashEntry {
+  id: string;
+  kind: WorkspaceNodeKind;
+  deletedAt: number;
+  deletedByUserId: string;
+  files: WorkspaceFile[];
+  folders: WorkspaceFolder[];
+}
+
+export interface WorkspaceState {
+  id: string;
+  name: string;
+  ownerId: string;
+  language: SupportedLanguage;
+  rootFolderId: string;
+  folders: Record<string, WorkspaceFolder>;
+  files: Record<string, WorkspaceFile>;
+  openFileIds: string[];
+  activeFileId: string;
+  recentlyOpenedFileIds: string[];
+  execution: { entryFileId: string | null };
+  git: { repositoryId: string | null; branch: string | null; provider?: "github" | "gitlab" | "bitbucket" | "azure-devops" | "local" | "unknown" | null; repositoryRootId?: string | null };
+  ai: { indexedAt: number | null; contextVersion: number };
+  trash: WorkspaceTrashEntry[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type WorkspaceOperationType =
+  | "create-file"
+  | "create-folder"
+  | "rename"
+  | "delete"
+  | "duplicate-file"
+  | "move"
+  | "copy"
+  | "paste"
+  | "restore-file"
+  | "set-active-file"
+  | "set-open-files"
+  | "set-file-language";
+
+export interface WorkspaceOperation {
+  id: string;
+  type: WorkspaceOperationType;
+  nodeId?: string;
+  parentId?: string;
+  name?: string;
+  sourceId?: string;
+  targetParentId?: string;
+  fileIds?: string[];
+  language?: SupportedLanguage;
+}
+
 export interface HistoryEntry {
   id: string;
   roomVersion: number;
@@ -53,6 +135,8 @@ export interface HistoryEntry {
   createdByUserId: string;
   createdByUsername: string;
   reason: HistoryReason;
+  workspaceOperation?: WorkspaceOperationType;
+  fileId?: string;
 }
 
 export interface RoomState {
@@ -67,6 +151,9 @@ export interface RoomState {
   participants: Record<string, Participant>;
   chat: ChatMessage[];
   history: HistoryEntry[];
+  workspace: WorkspaceState;
+  appliedWorkspaceOperationIds: string[];
+  deletedAt?: number;
 }
 
 export interface RoomSnapshot {
@@ -81,4 +168,6 @@ export interface RoomSnapshot {
   participants: ParticipantSnapshot[];
   chat: ChatMessage[];
   history: HistoryEntry[];
+  workspace: WorkspaceState;
+  deletedAt?: number;
 }

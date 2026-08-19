@@ -1,11 +1,13 @@
-import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
-import { useEffect, useMemo, useRef } from "react";
+﻿import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+import { Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type * as MonacoEditor from "monaco-editor";
 import type { MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import { useTheme } from "../../context/ThemeContext";
 import { useRoomStore } from "../../store/useRoomStore";
 import type { Participant, TypingParticipant, UserSession } from "../../types/collaboration";
+import type { AIAction } from "../../types/ai";
 import { EditorToolbar } from "./EditorToolbar";
 import { configureMonaco } from "./monacoSetup";
 
@@ -16,9 +18,14 @@ interface CollaborativeEditorProps {
   editorTypingUsers: TypingParticipant[];
   session: UserSession;
   roomId: string;
+  fileId: string;
+  openFileIds: string[];
   socketRef: MutableRefObject<Socket | null>;
   onChangeLanguage: (language: "javascript" | "python" | "cpp") => void;
   isPaused: boolean;
+  onSelectionChange?: (selection: { fileId: string; code: string; startOffset: number; endOffset: number } | null) => void;
+  onOpenAIAssistant?: (action?: AIAction) => void;
+  onEditorAIReady?: (actions: { insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean }) => void;
 }
 
 const languageMap = {
@@ -34,9 +41,14 @@ export const CollaborativeEditor = ({
   editorTypingUsers,
   session,
   roomId,
+  fileId,
+  openFileIds,
   socketRef,
   onChangeLanguage,
-  isPaused
+  isPaused,
+  onSelectionChange,
+  onOpenAIAssistant,
+  onEditorAIReady
 }: CollaborativeEditorProps) => {
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
@@ -44,13 +56,16 @@ export const CollaborativeEditor = ({
   const debounceRef = useRef<number | null>(null);
   const cursorDebounceRef = useRef<number | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
+  const disposablesRef = useRef<MonacoEditor.IDisposable[]>([]);
   const lastCursorRef = useRef("1:1");
   const typingRef = useRef(false);
+  const lastSelectionRef = useRef("");
+  const [hasSelection, setHasSelection] = useState(false);
   const { setCode } = useRoomStore();
   const { editorColorMode } = useTheme();
 
   const currentUser = participants.find((participant) => participant.userId === session.userId);
-  const canEdit = currentUser?.role !== "viewer" && !isPaused;
+  const canEdit = Boolean(currentUser) && !isPaused;
 
   const remoteParticipants = useMemo(
     () => participants.filter((participant) => participant.userId !== session.userId && participant.isOnline),
@@ -81,14 +96,36 @@ export const CollaborativeEditor = ({
 
     configureMonaco(monaco);
     monaco.editor.setTheme(editorColorMode === "light" ? "code-sphere-light" : "code-sphere-dark");
+    onEditorAIReady?.({
+      insertAtCursor: (nextCode) => {
+        const model = editor.getModel(); const position = editor.getPosition();
+        if (!model || !position) return false;
+        editor.executeEdits("ai-assistant", [{ range: new monaco.Range(position.lineNumber, position.column, position.lineNumber, position.column), text: nextCode, forceMoveMarkers: true }]);
+        editor.focus(); return true;
+      },
+      replaceSelection: (selection, nextCode) => {
+        const model = editor.getModel();
+        if (!model || selection.fileId !== fileId) return false;
+        const start = model.getPositionAt(selection.startOffset); const end = model.getPositionAt(selection.endOffset); const range = new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column);
+        if (model.getValueInRange(range) !== selection.code) return false;
+        editor.executeEdits("ai-assistant", [{ range, text: nextCode, forceMoveMarkers: true }]); editor.focus(); return true;
+      },
+      replaceFile: (nextCode) => {
+        const model = editor.getModel(); if (!model) return false;
+        const fullRange = model.getFullModelRange(); editor.executeEdits("ai-assistant", [{ range: fullRange, text: nextCode, forceMoveMarkers: true }]); editor.focus(); return true;
+      }
+    });
 
-    editor.onDidChangeModelContent(() => {
+    disposablesRef.current.forEach((disposable) => disposable.dispose());
+    disposablesRef.current = [];
+
+    disposablesRef.current.push(editor.onDidChangeModelContent(() => {
       if (ignoreSyncRef.current) {
         return;
       }
 
       const value = editor.getValue();
-      setCode(value);
+      setCode(value, undefined, fileId);
       emitEditorTyping(true);
 
       if (debounceRef.current) {
@@ -99,12 +136,27 @@ export const CollaborativeEditor = ({
         socketRef.current?.emit("editor:update", {
           roomId,
           userId: session.userId,
-          code: value
+          code: value,
+          fileId
         });
       }, 70);
-    });
+    }));
 
-    editor.onDidChangeCursorPosition((event) => {
+    disposablesRef.current.push(editor.onDidChangeCursorSelection((event) => {
+      const model = editor.getModel();
+      if (!model) return;
+      const code = model.getValueInRange(event.selection);
+      const startOffset = model.getOffsetAt(event.selection.getStartPosition());
+      const endOffset = model.getOffsetAt(event.selection.getEndPosition());
+      const signature = fileId + ":" + startOffset + ":" + endOffset;
+      if (lastSelectionRef.current === signature) return;
+      lastSelectionRef.current = signature;
+      const selected = Boolean(code.trim());
+      setHasSelection(selected);
+      onSelectionChange?.(selected ? { fileId, code, startOffset, endOffset } : null);
+    }));
+
+    disposablesRef.current.push(editor.onDidChangeCursorPosition((event) => {
       const nextCursor = {
         lineNumber: event.position.lineNumber,
         column: event.position.column
@@ -127,11 +179,13 @@ export const CollaborativeEditor = ({
           cursor: nextCursor
         });
       }, 45);
-    });
+    }));
 
-    editor.onDidBlurEditorText(() => {
-      emitEditorTyping(false);
-    });
+    disposablesRef.current.push(
+      editor.onDidBlurEditorText(() => {
+        emitEditorTyping(false);
+      })
+    );
   };
 
   useEffect(() => {
@@ -163,7 +217,17 @@ export const CollaborativeEditor = ({
       editor.setPosition(position);
     }
     ignoreSyncRef.current = false;
-  }, [code]);
+  }, [code, fileId]);
+
+
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    if (!monaco) return;
+    const openUris = new Set(openFileIds.map((id) => monaco.Uri.parse(`inmemory://workspace/${id}`).toString()));
+    monaco.editor.getModels().forEach((model) => {
+      if (model.uri.scheme === "inmemory" && model.uri.authority === "workspace" && !openUris.has(model.uri.toString()) && model !== editorRef.current?.getModel()) model.dispose();
+    });
+  }, [fileId, openFileIds]);
 
   useEffect(
     () => () => {
@@ -174,6 +238,9 @@ export const CollaborativeEditor = ({
       if (cursorDebounceRef.current) {
         window.clearTimeout(cursorDebounceRef.current);
       }
+
+      disposablesRef.current.forEach((disposable) => disposable.dispose());
+      disposablesRef.current = [];
 
       if (typingRef.current) {
         socketRef.current?.emit("editor:typing", {
@@ -236,12 +303,14 @@ export const CollaborativeEditor = ({
         canEdit={Boolean(canEdit)}
         isPaused={isPaused}
         editorTypingUsers={visibleTypingUsers}
+        participants={participants}
         onChangeLanguage={onChangeLanguage}
       />
 
       <div className="min-h-0 flex-1 overflow-hidden px-1 pb-1 pt-0 sm:px-2 sm:pb-2">
         <Editor
           height="100%"
+          path={`inmemory://workspace/${fileId}`}
           language={languageMap[language]}
           value={code}
           onMount={handleMount}
@@ -266,6 +335,7 @@ export const CollaborativeEditor = ({
             readOnly: !canEdit
           }}
         />
+        {hasSelection && onOpenAIAssistant ? <div className="absolute right-4 top-14 z-20 flex overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] shadow-lg"><button type="button" onClick={() => onOpenAIAssistant("custom")} className="theme-button-primary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold"><Sparkles className="h-3.5 w-3.5" /> Ask AI</button>{(["explain", "fix", "refactor", "optimize", "document", "test"] as AIAction[]).map((action) => <button key={action} type="button" onClick={() => onOpenAIAssistant(action)} className="border-l border-[var(--border)] px-2 py-1.5 text-[10px] font-medium capitalize text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]">{action === "test" ? "Tests" : action}</button>)}</div> : null}
         {isPaused ? (
           <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur-md sm:inset-x-6 sm:bottom-6 sm:text-sm">
             Editing is paused. Code is read-only until the owner resumes.

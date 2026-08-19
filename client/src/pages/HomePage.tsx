@@ -1,15 +1,17 @@
-import { ArrowRight, Clock3 } from "lucide-react";
-import { useRef, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+﻿import { ArrowRight, Clock3 } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { AppLogo } from "../components/ui/AppLogo";
 import { ThemeToggle } from "../components/ui/ThemeToggle";
 import { api } from "../lib/api";
 import { formatRelativeTime } from "../lib/format";
 import { storage } from "../lib/storage";
 import type { RecentRoom, SupportedLanguage } from "../types/collaboration";
+import { useAuth } from "../context/AuthContext";
 
 export const HomePage = () => {
   const navigate = useNavigate();
+  const { user, loading: authLoading, signOut } = useAuth();
   const createCardRef = useRef<HTMLFormElement | null>(null);
   const joinCardRef = useRef<HTMLFormElement | null>(null);
   const [username, setUsername] = useState("");
@@ -17,7 +19,21 @@ export const HomePage = () => {
   const [language, setLanguage] = useState<SupportedLanguage>("javascript");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
-  const [recentRooms] = useState<RecentRoom[]>(() => storage.getRecentRooms());
+  const [recentRooms, setRecentRooms] = useState<RecentRoom[]>(() => storage.getRecentRooms());
+
+  const refreshRecentRooms = () => setRecentRooms(storage.getRecentRooms());
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all(storage.getRecentRooms().map(async (room) => {
+      try {
+        await api.getRoom(room.roomId, storage.getSession(room.roomId));
+      } catch {
+        storage.removeRoom(room.roomId);
+      }
+    })).then(() => { if (active) refreshRecentRooms(); });
+    return () => { active = false; };
+  }, []);
 
   const createRoom = async (event: FormEvent) => {
     event.preventDefault();
@@ -30,9 +46,15 @@ export const HomePage = () => {
     setError(null);
 
     try {
-      const { session } = await api.createRoom(username.trim(), language);
+      const { room, session } = await api.createRoom(username.trim(), language);
       storage.saveSession(session);
-      navigate(`/room/${session.roomId}`);
+      refreshRecentRooms();
+      navigate(`/room/${session.roomId}`, {
+        state: {
+          room,
+          session
+        }
+      });
     } catch (issue) {
       setError(issue instanceof Error ? issue.message : "Unable to create room");
     } finally {
@@ -57,9 +79,15 @@ export const HomePage = () => {
 
     try {
       const existingSession = storage.getSession(roomId.trim());
-      const { session } = await api.joinRoom(roomId.trim(), username.trim(), existingSession?.userId);
+      const { room, session } = await api.joinRoom(roomId.trim(), username.trim(), existingSession);
       storage.saveSession(session);
-      navigate(`/room/${session.roomId}`);
+      refreshRecentRooms();
+      navigate(`/room/${session.roomId}`, {
+        state: {
+          room,
+          session
+        }
+      });
     } catch (issue) {
       setError(issue instanceof Error ? issue.message : "Unable to join room");
     } finally {
@@ -73,17 +101,20 @@ export const HomePage = () => {
 
     try {
       const existingSession = storage.getSession(recentRoom.roomId);
+      const room = await api.getRoom(recentRoom.roomId, existingSession);
       if (existingSession) {
         storage.saveSession(existingSession);
-        navigate(`/room/${recentRoom.roomId}`);
+        refreshRecentRooms();
+        navigate(`/room/${recentRoom.roomId}`, { state: { room, session: existingSession } });
         return;
       }
-
-      const { session } = await api.joinRoom(recentRoom.roomId, recentRoom.username);
-      storage.saveSession(session);
-      navigate(`/room/${session.roomId}`);
-    } catch (issue) {
-      setError(issue instanceof Error ? issue.message : "Unable to rejoin room");
+      const joined = await api.joinRoom(recentRoom.roomId, recentRoom.username);
+      storage.saveSession(joined.session);
+      refreshRecentRooms();
+      navigate(`/room/${joined.session.roomId}`, { state: { room: joined.room, session: joined.session } });
+    } catch {
+      storage.removeRoom(recentRoom.roomId);
+      refreshRecentRooms();
     } finally {
       setLoading(null);
     }
@@ -96,12 +127,13 @@ export const HomePage = () => {
           <div className="flex items-start gap-3">
             <AppLogo size={36} />
             <div>
-              <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-[var(--text-faint)]">Code Sphere</p>
-              <h1 className="mt-1 font-display text-2xl font-semibold text-[var(--text-primary)]">Real-time coding rooms</h1>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.25em] text-[var(--text-faint)]">Code Collaborator</p>
+              <h1 className="mt-1 font-display text-2xl font-semibold text-[var(--text-primary)]">Realtime collaborative workspaces</h1>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <ThemeToggle />
+            {!authLoading && user ? <><Link to="/dashboard" className="theme-button-neutral rounded-full border px-4 py-2">Dashboard</Link><Link to="/profile" className="theme-button-neutral rounded-full border px-4 py-2" title={user.email ?? user.displayName}>{user.displayName}</Link><button type="button" onClick={() => void signOut()} className="theme-button-neutral rounded-full border px-4 py-2">Log out</button></> : !authLoading ? <><Link to="/login" className="theme-button-neutral rounded-full border px-4 py-2">Sign in</Link><Link to="/register" className="theme-button-primary rounded-full px-4 py-2">Sign up</Link></> : null}
             <button
               type="button"
               onClick={() => createCardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" })}
@@ -121,6 +153,7 @@ export const HomePage = () => {
 
         <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
           <div className="grid gap-4">
+
             <div className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
               <p className="text-xs uppercase tracking-[0.32em] text-sky-300/80">Identity</p>
               <h2 className="mt-3 font-display text-4xl theme-text-primary">Start with your name</h2>
@@ -199,7 +232,7 @@ export const HomePage = () => {
               </div>
               <div className="theme-surface rounded-2xl border p-4">
                 <p className="font-semibold theme-text-primary">Stay focused</p>
-                <p className="mt-1 text-sm theme-text-muted">One editor, one run action, and one fast chat rail.</p>
+                <p className="mt-1 text-sm theme-text-muted">A focused shared workspace with chat, presence, and optional tools when configured.</p>
               </div>
             </div>
           </div>
@@ -243,6 +276,8 @@ export const HomePage = () => {
               </div>
             )}
           </div>
+
+
         </section>
       </div>
     </main>

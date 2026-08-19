@@ -1,20 +1,48 @@
-import { createServer } from "node:http";
+import { createServer, type Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
-import { createApp } from "./app";
-import { env } from "./config/env";
-import { registerCollaborationSocket } from "./sockets/collaborationSocket";
+import { createApp, corsOptions } from "./app";
+import { assertProductionEnvironment, env, environmentIssues, featureAvailability } from "./config/env";
+import { clearCollaborationRuntime, registerCollaborationSocket } from "./sockets/collaborationSocket";
 
-const app = createApp();
-const httpServer = createServer(app);
+export const createRealtimeServer = () => {
+  const app = createApp();
+  const httpServer = createServer(app);
+  const io = new Server(httpServer, { cors: corsOptions, maxHttpBufferSize: 1_000_000, transports: ["websocket", "polling"] });
+  registerCollaborationSocket(io);
+  return { app, httpServer, io };
+};
 
-const io = new Server(httpServer, {
-  cors: {
-    origin: env.clientUrl
-  }
+const closeServer = (httpServer: HttpServer, io: Server) => new Promise<void>((resolve, reject) => {
+  clearCollaborationRuntime();
+  io.close(() => {
+    if (!httpServer.listening) return resolve();
+    httpServer.close((error) => error ? reject(error) : resolve());
+  });
 });
 
-registerCollaborationSocket(io);
+export const startServer = () => {
+  assertProductionEnvironment();
+  const { httpServer, io } = createRealtimeServer();
+  let shuttingDown = false;
+  const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.info(`[shutdown] ${signal} received; closing realtime connections.`);
+    const timeout = setTimeout(() => process.exit(1), 10_000);
+    timeout.unref();
+    void closeServer(httpServer, io)
+      .then(() => { clearTimeout(timeout); console.info("[shutdown] complete"); process.exit(0); })
+      .catch((error) => { clearTimeout(timeout); console.error("[shutdown] failed", error instanceof Error ? error.message : "unknown error"); process.exit(1); });
+  };
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+  httpServer.listen(env.port, () => {
+    const features = featureAvailability();
+    console.info(`[startup] Code Collaborator backend listening on port ${env.port} (${env.nodeEnv}).`);
+    console.info(`[startup] persistence=${features.persistence ? "configured" : "not configured"}; github=${features.github ? "configured" : "not configured"}; media=${features.media ? "configured" : "not configured"}; ai=${Object.values(features.ai).filter(Boolean).length} configured provider(s).`);
+    if (environmentIssues.length) console.warn(`[startup] optional configuration warning(s): ${environmentIssues.join(" ")}`);
+  });
+  return { httpServer, io, shutdown };
+};
 
-httpServer.listen(env.port, () => {
-  console.log(`Server ready on http://localhost:${env.port}`);
-});
+if (require.main === module) startServer();
