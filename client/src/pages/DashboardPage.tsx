@@ -1,4 +1,4 @@
-import { Activity, ArrowRight, Bot, FolderCode, Github, Plus, RefreshCw, Settings, UserRound } from "lucide-react";
+import { Activity, ArrowRight, Bot, FolderCode, Github, LogOut, Plus, RefreshCw, Settings, UserRound } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AppLogo } from "../components/ui/AppLogo";
@@ -32,7 +32,7 @@ const Distribution = ({ title, items, empty }: { title: string; items: Array<{ n
 };
 
 export const DashboardPage = () => {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [rooms, setRooms] = useState<RecentRoomRow[]>([]);
   const [dashboard, setDashboard] = useState<AnalyticsDashboardResponse | null>(null);
@@ -56,10 +56,18 @@ export const DashboardPage = () => {
   useEffect(() => { setLoading(true); void load(range, true); }, [load, range]);
   const trendMax = useMemo(() => Math.max(...(dashboard?.dailyActivity.map((item) => item.count) ?? []), 1), [dashboard]);
   const refresh = () => { setRefreshing(true); void load(range, true); };
+  const signOutAndReturnHome = async () => {
+    try {
+      await signOut();
+      navigate("/", { replace: true });
+    } catch (signOutError) {
+      setError(signOutError instanceof Error ? signOutError.message : "Unable to sign out. Please try again.");
+    }
+  };
   const overview = dashboard?.overview;
 
   return <main className="theme-page-home min-h-screen px-4 py-6"><div className="mx-auto grid max-w-6xl gap-6">
-    <nav className="theme-panel-solid flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-5 py-4"><div className="flex items-center gap-3"><AppLogo size={34} /><div><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Workspace analytics</p><h1 className="font-display text-2xl theme-text-primary">Welcome back, {user?.displayName ?? "member"}</h1></div></div><div className="flex items-center gap-2"><ThemeToggle /><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/profile"><UserRound className="mr-1 inline h-4 w-4" />Profile</Link><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/settings"><Settings className="mr-1 inline h-4 w-4" />Settings</Link></div></nav>
+    <nav className="theme-panel-solid flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-5 py-4"><div className="flex items-center gap-3"><AppLogo size={34} /><div><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Workspace analytics</p><h1 className="font-display text-2xl theme-text-primary">Welcome back, {user?.displayName ?? "member"}</h1></div></div><div className="flex items-center gap-2"><ThemeToggle /><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/profile"><UserRound className="mr-1 inline h-4 w-4" />Profile</Link><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/settings"><Settings className="mr-1 inline h-4 w-4" />Settings</Link><button type="button" onClick={() => { void signOutAndReturnHome(); }} className="theme-button-neutral rounded-lg border px-3 py-2 text-sm"><LogOut className="mr-1 inline h-4 w-4" />Log out</button></div></nav>
 
     <section className="grid gap-4 md:grid-cols-3"><button type="button" onClick={() => navigate("/")} className="theme-panel rounded-2xl border p-5 text-left"><Plus className="h-5 w-5 text-[var(--accent)]" /><h2 className="mt-4 font-display text-xl">Create room</h2><p className="mt-1 text-sm theme-text-muted">Start a collaborative workspace.</p></button><Link to="/settings" className="theme-panel rounded-2xl border p-5"><Github className="h-5 w-5 text-[var(--accent)]" /><h2 className="mt-4 font-display text-xl">Connect GitHub</h2><p className="mt-1 text-sm theme-text-muted">Manage repository access securely.</p></Link><Link to="/" className="theme-panel rounded-2xl border p-5"><FolderCode className="h-5 w-5 text-[var(--accent)]" /><h2 className="mt-4 font-display text-xl">Join a room</h2><p className="mt-1 text-sm theme-text-muted">Open a shared workspace with its room ID.</p></Link></section>
 

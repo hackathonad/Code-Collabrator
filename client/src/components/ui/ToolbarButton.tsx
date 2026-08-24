@@ -18,6 +18,6 @@ export const ToolbarButton = ({ label, icon, accent = false, className = "", dis
     {...rest}
   >
     <span className="flex h-4 w-4 shrink-0 items-center justify-center [&>svg]:h-4 [&>svg]:w-4">{icon}</span>
-    <span className="hidden lg:inline">{label}</span>
+    <span className="hidden 2xl:inline">{label}</span>
   </button>
 );

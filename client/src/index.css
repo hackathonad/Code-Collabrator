@@ -413,6 +413,19 @@ code {
     color: #fff;
   }
 
+  /* Primary collaboration actions stay recognisable across the selectable themes. */
+  .theme-workspace-action {
+    border-color: rgba(167, 139, 250, 0.72);
+    background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+    color: #fff;
+    box-shadow: 0 10px 28px rgba(109, 40, 217, 0.24);
+  }
+
+  .theme-workspace-action:hover {
+    filter: brightness(1.08);
+    box-shadow: 0 12px 34px rgba(109, 40, 217, 0.36);
+  }
+
   .theme-badge {
     border-color: var(--input-border);
     background: var(--badge-bg);

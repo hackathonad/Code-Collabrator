@@ -1,24 +1,39 @@
 # Environment reference
 
-Copy `client/.env.example` to `client/.env` and `server/.env.example` to `server/.env` for local development. Never commit either file.
+Copy `client/.env.example` to `client/.env` and `server/.env.example` to `server/.env` for local development. Do not commit either file. The server loads `server/.env`; Vite reads client-side variables at build time.
 
-| Variable | Side | Required | Purpose |
-| --- | --- | --- | --- |
-| `VITE_API_URL` | browser | Production | HTTPS URL of the persistent Express API. Empty locally uses the Vite proxy. |
-| `VITE_SOCKET_URL` | browser | Production | HTTPS URL of the persistent Socket.IO backend. |
-| `VITE_PUBLIC_SITE_URL` | browser | Optional | Canonical/Open Graph base URL; browser-visible. |
-| `VITE_SUPABASE_URL` | browser | Auth | Supabase project URL. |
-| `VITE_SUPABASE_ANON_KEY` | browser | Auth | Supabase anon/publishable key only. |
-| `PORT` | server | Optional | HTTP port; defaults to `4000`. |
-| `NODE_ENV` | server | Production | Set to `production` to enforce production validation. |
-| `CLIENT_URL` | server | Production | Comma-separated frontend origins allowed by CORS/Socket.IO. |
-| `GUEST_SESSION_SECRET` | server | Production | Unique private HMAC secret, 32+ characters. |
-| `SUPABASE_URL` | server | Persistence | Supabase project URL. |
-| `SUPABASE_SERVICE_ROLE_KEY` | server | Persistence | Server-only Supabase service-role key. |
-| `OLLAMA_BASE_URL`, `OLLAMA_MODEL` | server | Optional | Backend-local Ollama endpoint and optional default model. |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | server | Optional | Gemini server-side provider configuration. |
-| `GROQ_API_KEY`, `GROQ_MODEL` | server | Optional | Groq server-side provider configuration. |
-| `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` | server | Optional together | LiveKit websocket endpoint and server-only signing credentials. |
-| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_REDIRECT_URI`, `GITHUB_TOKEN_ENCRYPTION_KEY` | server | Optional together | GitHub OAuth and encrypted token storage. |
+All variables below are taken from the current client Vite configuration or `server/src/config/env.ts`.
 
-`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are accepted only by the Vite browser build for compatibility with the current Vercel project. Prefer the `VITE_` names for new deployments. No `VITE_` value may contain a service-role key, OAuth secret, AI key, LiveKit secret, JWT secret, or guest-session secret.
+| Variable | Client / server | Required? | Purpose | Safe to expose in browser? |
+| --- | --- | --- | --- | --- |
+| `VITE_API_URL` | Client | Required for a Vercel production frontend | Public HTTPS origin of the persistent Express API. Empty locally uses the Vite proxy. | Yes |
+| `VITE_SOCKET_URL` | Client | Required for a Vercel production frontend | Public HTTPS origin of the persistent Socket.IO backend. | Yes |
+| `VITE_PUBLIC_SITE_URL` | Client | Optional | Canonical and Open Graph URL base. | Yes |
+| `VITE_SUPABASE_URL` | Client | Optional; required with the anon key for browser authentication | Supabase project URL. | Yes |
+| `VITE_SUPABASE_ANON_KEY` | Client | Optional; required with the project URL for browser authentication | Browser-safe Supabase anon or publishable key. | Yes |
+| `NEXT_PUBLIC_SUPABASE_URL` | Client | Optional compatibility alias | Legacy browser-safe fallback for `VITE_SUPABASE_URL`. Prefer the `VITE_` name. | Yes |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Client | Optional compatibility alias | Legacy browser-safe fallback for `VITE_SUPABASE_ANON_KEY`. Prefer the `VITE_` name. | Yes |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Client | Optional compatibility alias | Legacy browser-safe publishable-key fallback. Prefer `VITE_SUPABASE_ANON_KEY`. | Yes |
+| `NODE_ENV` | Server | Required in production | Set to `production` so startup enforces production validation. | No |
+| `PORT` | Server | Optional | HTTP port. A valid value is used; otherwise the server defaults to `4000`. | No |
+| `CLIENT_URL` | Server | Required in production | Comma-separated HTTPS frontend origins allowed by Express CORS and Socket.IO. | No |
+| `GUEST_SESSION_SECRET` | Server | Required in production | Private HMAC secret used to sign room guest sessions; production requires a unique value of at least 32 characters. | No |
+| `SUPABASE_URL` | Server | Optional; required with the service-role key for server persistence/member verification | Supabase project URL used by the server admin client. | No |
+| `SUPABASE_SERVICE_ROLE_KEY` | Server | Optional; required with `SUPABASE_URL` for server persistence/member verification | Server-only Supabase service-role credential. Never place it in Vite or browser configuration. | No |
+| `OLLAMA_BASE_URL` | Server | Optional | Backend-reachable Ollama HTTP URL. The code defaults to a local Ollama URL when unset. | No |
+| `OLLAMA_MODEL` | Server | Optional | Default Ollama model; blank allows discovery of an installed model. | No |
+| `GEMINI_API_KEY` | Server | Optional | Server-only Gemini provider credential. | No |
+| `GEMINI_MODEL` | Server | Optional | Optional Gemini model override. | No |
+| `GROQ_API_KEY` | Server | Optional | Server-only Groq provider credential. | No |
+| `GROQ_MODEL` | Server | Optional | Optional Groq model override. | No |
+| `LIVEKIT_URL` | Server | Optional; all three LiveKit variables must be supplied together | Public `ws:` or `wss:` LiveKit endpoint used to issue room tokens. | No |
+| `LIVEKIT_API_KEY` | Server | Optional; all three LiveKit variables must be supplied together | LiveKit server signing credential. | No |
+| `LIVEKIT_API_SECRET` | Server | Optional; all three LiveKit variables must be supplied together | LiveKit server signing credential. | No |
+| `GITHUB_CLIENT_ID` | Server | Optional; all four GitHub variables must be supplied together | GitHub OAuth application client identifier. | No |
+| `GITHUB_CLIENT_SECRET` | Server | Optional; all four GitHub variables must be supplied together | GitHub OAuth application client secret. | No |
+| `GITHUB_REDIRECT_URI` | Server | Optional; all four GitHub variables must be supplied together | Public backend callback URL ending in `/api/github/callback`. | No |
+| `GITHUB_TOKEN_ENCRYPTION_KEY` | Server | Optional; all four GitHub variables must be supplied together | Private key used to encrypt stored GitHub access tokens. | No |
+
+Vite deliberately exposes both `VITE_` and `NEXT_PUBLIC_` prefixes because `client/vite.config.ts` configures both. Only the browser-safe Supabase URL and anon/publishable key use the legacy `NEXT_PUBLIC_` aliases. Prefer the `VITE_` names for new deployments.
+
+`SUPABASE_JWT_SECRET`, `OPENAI_API_KEY`, `OPENAI_MODEL`, and `PISTON_URL` are not read by the current application source and are not deployment requirements.

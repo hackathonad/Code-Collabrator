@@ -1,5 +1,6 @@
 ﻿import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Cloud, FolderTree, GitBranch, Phone, Settings, TerminalSquare, Users } from "lucide-react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { AIAssistantPanel } from "../components/ai/AIAssistantPanel";
@@ -7,8 +8,10 @@ import { MediaCallPanel } from "../components/media/MediaCallPanel";
 import { CollaborativeEditor } from "../components/editor/CollaborativeEditor";
 import { RoomToolbar } from "../components/layout/RoomToolbar";
 import { ParticipantsPanel } from "../components/sidebar/ParticipantsPanel";
+import { RoomActivityPanel } from "../components/sidebar/RoomActivityPanel";
 import { WorkspaceExplorer } from "../components/workspace/WorkspaceExplorer";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
+import { WorkspaceOutputPanel, type WorkspacePanelTab } from "../components/workspace/WorkspaceOutputPanel";
 import { SettingsModal } from "../components/ui/SettingsModal";
 import { ToastViewport } from "../components/ui/ToastViewport";
 import { useToast } from "../hooks/useToast";
@@ -31,7 +34,11 @@ export const RoomPage = () => {
   const [joining, setJoining] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [isAIOpen, setIsAIOpen] = useState(false);
+  const [isPeopleOpen, setIsPeopleOpen] = useState(false);
+  const [isActivityOpen, setIsActivityOpen] = useState(false);
   const [isMediaOpen, setIsMediaOpen] = useState(false);
+  const [workspacePanelTab, setWorkspacePanelTab] = useState<WorkspacePanelTab>("run");
+  const [activity, setActivity] = useState<"explorer" | "source-control" | "ai" | "run" | "deploy" | "settings">("explorer");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const editorAIActionsRef = useRef<{ insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean } | null>(null);
   const { room, session, connectionStatus, error, chatTypingUsers, editorTypingUsers, setRoom, setSession, setError } =
@@ -84,7 +91,11 @@ export const RoomPage = () => {
   const toggleChat = () => {
     setIsChatOpen((open) => {
       const next = !open;
-      if (next) setIsAIOpen(false);
+      if (next) {
+        setIsAIOpen(false);
+        setIsPeopleOpen(false);
+        setIsActivityOpen(false);
+      }
       return next;
     });
   };
@@ -92,15 +103,30 @@ export const RoomPage = () => {
   const toggleAI = () => {
     setIsAIOpen((open) => {
       const next = !open;
-      if (next) setIsChatOpen(false);
+      if (next) {
+        setIsChatOpen(false);
+        setIsPeopleOpen(false);
+        setIsActivityOpen(false);
+      }
       return next;
     });
   };
 
   const openMedia = () => {
     setIsMediaOpen(true);
-    setIsChatOpen(false);
-    setIsAIOpen(false);
+  };
+
+  const selectActivity = (next: "explorer" | "source-control" | "ai" | "run" | "deploy" | "settings") => {
+    setActivity(next);
+    if (next === "ai") {
+      setIsAIOpen(true);
+      setIsChatOpen(false);
+      setIsPeopleOpen(false);
+      setIsActivityOpen(false);
+    }
+    if (next === "run") setWorkspacePanelTab("run");
+    if (next === "deploy") pushToast("Deploy this workspace from your connected hosting provider.");
+    if (next === "settings") setSettingsOpen(true);
   };
 
   const insertAICode = (generatedCode: string) => {
@@ -212,7 +238,7 @@ export const RoomPage = () => {
 
   const handleRunExternal = async () => {
     if (!room) {
-      return;
+      return false;
     }
 
     try {
@@ -221,9 +247,11 @@ export const RoomPage = () => {
         language: room.workspace.files[room.workspace.activeFileId]?.language ?? room.language
       });
       pushToast("Code copied - run in the new tab");
+      return true;
     } catch (issue) {
       setError(issue instanceof Error ? issue.message : "Unable to open external runner");
       pushToast("Unable to open external runner");
+      return false;
     }
   };
 
@@ -237,6 +265,15 @@ export const RoomPage = () => {
       pushToast("Code copied to clipboard");
     } catch {
       pushToast("Could not copy code");
+    }
+  };
+
+  const handleCopyRoomLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      pushToast("Invite link copied");
+    } catch {
+      pushToast("Could not copy the invite link");
     }
   };
 
@@ -334,6 +371,7 @@ export const RoomPage = () => {
 
       <RoomToolbar
         roomId={room.roomId}
+        roomName={room.workspace.name}
         connectionStatus={connectionStatus}
         isPaused={room.isPaused}
         isOwner={isOwner}
@@ -345,7 +383,8 @@ export const RoomPage = () => {
         onToggleChat={toggleChat}
         onToggleAI={toggleAI}
         onCopyCode={() => void handleCopyCode()}
-        onRun={() => void handleRunExternal()}
+        onRun={() => setWorkspacePanelTab("run")}
+        onCopyRoomLink={() => void handleCopyRoomLink()}
         onPauseToggle={togglePause}
         onRestart={restartRoom}
         onOpenSettings={() => setSettingsOpen(true)}
@@ -367,14 +406,30 @@ export const RoomPage = () => {
       ) : null}
 
       <div className="flex min-h-0 min-w-0 flex-1">
-        <aside className="hidden w-[260px] shrink-0 flex-col overflow-hidden sm:flex lg:w-[280px]">
-          <div className="min-h-0 flex-[3] overflow-hidden"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} /></div>
-          <div className="min-h-0 flex-[2] overflow-hidden"><ParticipantsPanel participants={room.participants} editorTypingUsers={editorTypingUsers} session={session} ownerId={room.ownerId} roomId={room.roomId} socketRef={socketRef} onNotify={pushToast} /></div>
+        <aside className="theme-panel-solid hidden w-[72px] shrink-0 flex-col items-center gap-2 border-r border-[var(--border)] py-3 md:flex" aria-label="Activity bar">
+          {[
+            ["explorer", FolderTree, "Explorer"],
+            ["source-control", GitBranch, "Source control"],
+            ["ai", Bot, "AI Assistant"],
+            ["run", TerminalSquare, "Run & Debug"],
+            ["deploy", Cloud, "Deploy"],
+            ["settings", Settings, "Settings"]
+          ].map(([id, Icon, label]) => (
+            <button key={id as string} type="button" onClick={() => selectActivity(id as "explorer" | "source-control" | "ai" | "run" | "deploy" | "settings")} title={label as string} aria-label={label as string} className={`flex w-14 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition ${activity === id ? "bg-[var(--badge-bg)] text-[var(--accent)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"}`}>
+              <Icon className="h-5 w-5" />
+              <span className="truncate">{label as string}</span>
+            </button>
+          ))}
+        </aside>
+
+        <aside className="hidden w-[280px] shrink-0 overflow-hidden xl:block">
+          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => { setIsChatOpen(true); setIsAIOpen(false); setIsPeopleOpen(false); setIsActivityOpen(false); }} onOpenActivity={() => { setIsActivityOpen(true); setIsChatOpen(false); setIsAIOpen(false); setIsPeopleOpen(false); }} />
         </aside>
 
         <section className="min-h-0 min-w-0 flex flex-1 flex-col p-2 sm:p-3">
-          <WorkspaceTabs roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} />
-          <div className="min-h-0 flex-1"><CollaborativeEditor
+          <div className="theme-panel-solid flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-[var(--shadow-soft)]">
+            <WorkspaceTabs roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} />
+            <div className="min-h-0 flex-1"><CollaborativeEditor
             code={room.workspace.files[room.workspace.activeFileId]?.content ?? room.code}
             language={room.workspace.files[room.workspace.activeFileId]?.language ?? room.language}
             participants={room.participants}
@@ -387,19 +442,29 @@ export const RoomPage = () => {
             onChangeLanguage={changeLanguage}
             isPaused={room.isPaused}
             onSelectionChange={setAISelection}
-            onOpenAIAssistant={(action) => { setAIAction(action ?? "custom"); setIsAIOpen(true); setIsChatOpen(false); }}
+            onOpenAIAssistant={(action) => { setAIAction(action ?? "custom"); setIsAIOpen(true); setIsChatOpen(false); setIsPeopleOpen(false); setIsActivityOpen(false); }}
             onEditorAIReady={(actions) => { editorAIActionsRef.current = actions; }}
-          /></div>
+            /></div>
+          </div>
+          <WorkspaceOutputPanel activeFileName={room.workspace.files[room.workspace.activeFileId]?.name ?? "Untitled"} language={room.workspace.files[room.workspace.activeFileId]?.language ?? room.language} activeTab={workspacePanelTab} onActiveTabChange={setWorkspacePanelTab} onChangeLanguage={changeLanguage} onRun={handleRunExternal} />
         </section>
 
         <div
-          className={`flex min-h-0 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
-            isChatOpen || isAIOpen || isMediaOpen ? "w-[min(100vw-1rem,20rem)] sm:w-[25rem]" : "w-0"
+          className={`min-h-0 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
+            isChatOpen || isAIOpen || isPeopleOpen || isActivityOpen
+              ? "fixed inset-y-16 right-0 z-30 flex w-[min(100vw-1rem,24rem)] border-l border-[var(--border)] shadow-[-16px_0_36px_rgba(0,0,0,0.28)] xl:static xl:w-[22rem] xl:border-l-0 xl:shadow-none 2xl:w-[24rem]"
+              : "hidden xl:flex xl:w-0"
           }`}
         >
-          {isMediaOpen ? (
-            <MediaCallPanel roomId={room.roomId} session={session} onClose={() => setIsMediaOpen(false)} />
-          ) : isAIOpen ? (
+          <aside className="theme-panel-solid flex min-h-0 w-full flex-col border-l border-[var(--border)]" aria-label="Collaboration panel">
+            <div className="flex shrink-0 items-center border-b border-[var(--border)] px-2 pt-1">
+              <button type="button" onClick={() => { setIsChatOpen(true); setIsAIOpen(false); setIsPeopleOpen(false); setIsActivityOpen(false); }} className={`border-b-2 px-2.5 py-2 text-xs font-medium ${isChatOpen ? "border-[var(--accent)] text-[var(--text-primary)]" : "border-transparent text-[var(--text-muted)]"}`}>Chat</button>
+              <button type="button" onClick={() => { setIsAIOpen(true); setIsChatOpen(false); setIsPeopleOpen(false); setIsActivityOpen(false); }} className={`border-b-2 px-2.5 py-2 text-xs font-medium ${isAIOpen ? "border-[var(--accent)] text-[var(--text-primary)]" : "border-transparent text-[var(--text-muted)]"}`}>AI</button>
+              <button type="button" onClick={() => { setIsAIOpen(false); setIsChatOpen(false); setIsPeopleOpen(true); setIsActivityOpen(false); }} className={`ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${isPeopleOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}><Users className="h-3.5 w-3.5" />People</button>
+              <button type="button" onClick={() => { setIsAIOpen(false); setIsChatOpen(false); setIsPeopleOpen(false); setIsActivityOpen(true); }} className={`inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${isActivityOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}>Activity</button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden">
+          {isAIOpen ? (
             <AIAssistantPanel
               roomId={room.roomId}
               workspaceId={room.workspace.id}
@@ -421,7 +486,12 @@ export const RoomPage = () => {
               socketRef={socketRef}
               onClose={() => setIsChatOpen(false)}
             />
-          ) : null}
+          ) : isPeopleOpen ? <ParticipantsPanel participants={room.participants} editorTypingUsers={editorTypingUsers} session={session} ownerId={room.ownerId} roomId={room.roomId} socketRef={socketRef} onNotify={pushToast} /> : <RoomActivityPanel history={room.history} participants={room.participants} />}
+            </div>
+            <div className="h-[236px] shrink-0 border-t border-[var(--border)]">
+              {isMediaOpen ? <MediaCallPanel roomId={room.roomId} session={session} onClose={() => setIsMediaOpen(false)} /> : <div className="flex h-full flex-col items-center justify-center p-4 text-center"><Phone className="h-6 w-6 text-[var(--accent)]" /><p className="mt-2 text-sm font-medium text-[var(--text-primary)]">Voice &amp; Video</p><p className="mt-1 text-xs text-[var(--text-muted)]">Join a room call without leaving the workspace.</p><button type="button" onClick={openMedia} className="theme-button-primary mt-3 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium"><Phone className="h-3.5 w-3.5" />Join call</button></div>}
+            </div>
+          </aside>
         </div>
       </div>
     </main>
