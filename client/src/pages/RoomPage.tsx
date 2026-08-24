@@ -348,7 +348,7 @@ export const RoomPage = () => {
               <CircleAlert className="h-5 w-5 text-rose-400" />
               <p className="text-sm font-semibold text-rose-100">{error}</p>
               <p className="max-w-sm text-xs text-rose-200">The room may have been deleted, the session may have expired, or the backend may be unavailable.</p>
-              <div className="flex flex-wrap justify-center gap-2"><button type="button" onClick={() => navigate("/")} className="theme-button-primary rounded-lg px-3 py-2 text-xs">Go home</button><button type="button" onClick={() => window.location.reload()} className="theme-button-neutral rounded-lg border px-3 py-2 text-xs">Retry</button></div>
+              <div className="flex flex-wrap justify-center gap-2"><button type="button" onClick={() => navigate("/guest")} className="theme-button-primary rounded-lg px-3 py-2 text-xs">Go home</button><button type="button" onClick={() => window.location.reload()} className="theme-button-neutral rounded-lg border px-3 py-2 text-xs">Retry</button></div>
             </>
           ) : (
             <>
@@ -388,7 +388,7 @@ export const RoomPage = () => {
         onPauseToggle={togglePause}
         onRestart={restartRoom}
         onOpenSettings={() => setSettingsOpen(true)}
-        onHome={() => navigate("/")}
+        onHome={() => navigate("/guest")}
       />
 
       {room.isPaused ? (

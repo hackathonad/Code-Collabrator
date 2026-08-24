@@ -47,7 +47,7 @@ export const LoginPage = () => {
         {notice ? <p role="status" className="mt-4 rounded-xl border border-emerald-500/25 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">{notice}</p> : null}
         {message ? <p role="alert" className="mt-4 rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">{message}</p> : null}
         {!configured ? <p className="mt-4 text-sm theme-text-muted">Supabase client environment variables are not configured.</p> : null}
-        <p className="mt-5 text-sm theme-text-muted">Need an account? <Link className="text-sky-300" to="/register">Create one</Link>. Guest rooms still work from <Link className="text-sky-300" to="/">home</Link>.</p>
+        <p className="mt-5 text-sm theme-text-muted">Need an account? <Link className="text-sky-300" to="/register">Create one</Link>. Guest rooms still work from <Link className="text-sky-300" to="/guest">guest mode</Link>.</p>
       </form>
     </main>
   );
