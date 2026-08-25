@@ -79,7 +79,10 @@ router.post("/", guestSession, async (request, response) => {
     avatarUrl: identity.avatarUrl
   });
 
-  await roomPersistence.saveRoom(created.room);
+  // Room creation is an in-memory operation first. Persistence is optional
+  // and must not delay the REST response or make a cold/unavailable database
+  // look like a failed room-creation request to the browser.
+  void roomPersistence.saveRoom(created.room);
 
   response.status(201).json({
     ok: true,
