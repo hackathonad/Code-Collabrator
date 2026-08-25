@@ -3,13 +3,10 @@ import { useLocation } from "react-router-dom";
 
 const titles: Array<[RegExp, string]> = [
   [/^\/$/, "Code Collaborator — Realtime collaborative coding"],
-  [/^\/login$/, "Sign in — Code Collaborator"],
-  [/^\/register$/, "Sign up — Code Collaborator"],
-  [/^\/forgot-password$/, "Reset password — Code Collaborator"],
-  [/^\/dashboard$/, "Dashboard — Code Collaborator"],
-  [/^\/profile$/, "Profile — Code Collaborator"],
+  [/^\/home$/, "Code Collaborator — Realtime collaborative coding"],
+  [/^\/app$/, "Code Collaborator — Workspace home"],
   [/^\/settings$/, "Settings — Code Collaborator"],
-  [/^\/room\//, "Workspace — Code Collaborator"],
+  [/^\/(room|guest\/room)\//, "Workspace — Code Collaborator"],
   [/^\/privacy$/, "Privacy — Code Collaborator"],
   [/^\/terms$/, "Terms — Code Collaborator"]
 ];
@@ -24,7 +21,7 @@ export const RouteMetadata = () => {
   const { pathname } = useLocation();
   useEffect(() => {
     document.title = titles.find(([pattern]) => pattern.test(pathname))?.[1] ?? "Page not found — Code Collaborator";
-    const privateRoute = /^\/(room|dashboard|profile|settings|auth\/callback)/.test(pathname);
+    const privateRoute = /^\/(app|room|settings)/.test(pathname);
     upsertMeta('meta[name="robots"]', "robots", privateRoute ? "noindex, nofollow" : "index, follow");
     const base = (import.meta.env as Record<string, string | undefined>).VITE_PUBLIC_SITE_URL?.replace(/\/+$/, "");
     if (base) {

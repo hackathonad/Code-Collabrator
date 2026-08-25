@@ -11,6 +11,9 @@ export const copyTextToClipboard = async (value: string) => {
   textarea.style.opacity = "0";
   document.body.appendChild(textarea);
   textarea.select();
-  document.execCommand("copy");
-  document.body.removeChild(textarea);
+  try {
+    if (!document.execCommand("copy")) throw new Error("Clipboard access was denied");
+  } finally {
+    document.body.removeChild(textarea);
+  }
 };

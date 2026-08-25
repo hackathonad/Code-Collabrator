@@ -105,6 +105,19 @@ test("Ollama reports timeouts safely and converts streaming chunks", async () =>
   assert.equal(events.at(-1).result.content, "Hi there");
 });
 
+test("streaming providers flush a final chunk without a trailing newline", async () => {
+  const encoder = new TextEncoder();
+  const ollama = new OllamaProvider({
+    baseUrl: "http://127.0.0.1:11434",
+    fetchImplementation: async (url) => String(url).endsWith("/api/tags")
+      ? json({ models: [{ name: "qwen2.5-coder" }] })
+      : new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('{"message":{"content":"final"},"done":true}')); controller.close(); } }), { status: 200 })
+  });
+  const events = [];
+  for await (const event of ollama.stream(request())) events.push(event);
+  assert.equal(events.at(-1).result.content, "final");
+});
+
 test("cloud provider descriptors stay server-only, classify failures, and decode streaming responses", async () => {
   const unconfigured = new GeminiProvider({ apiKey: "" });
   const descriptors = await createAIService([unconfigured]).refreshProviders();
@@ -150,6 +163,18 @@ test("AI context remains bounded and excludes sensitive workspace files", () => 
   assert.ok(!context.openFiles.some((file) => file.name === ".env"));
 });
 
+test("AI context rejects a selection that belongs to another active file", () => {
+  const created = roomStore.createRoom("Selection owner");
+  const snapshot = created.room;
+  const active = snapshot.workspace.files[snapshot.workspace.activeFileId];
+  const other = { ...active, id: "other-file", name: "other.js", content: "const other = true;" };
+  snapshot.workspace.files[other.id] = other;
+  const input = { action: "explain", prompt: "Explain this", currentFileId: active.id, selectedCodeFileId: other.id, selectedCode: other.content, conversation: [], settings: { ...request().settings, workspaceContextSize: "standard" } };
+  const context = buildAIContext(snapshot, input, null);
+  assert.equal(context.selectedCode, undefined);
+  assert.ok(context.excludedSections.includes("selected code from a different file"));
+});
+
 test("prompt construction preserves reusable actions and bounded context", () => {
   const messages = createPromptMessages(
     { action: "fix", prompt: "Why does this fail?", conversation: [], settings: request().settings },
@@ -167,6 +192,19 @@ test("AI route rejects malformed requests before touching a provider", async () 
     const { port } = server.address();
     const response = await fetch("http://127.0.0.1:" + port + "/api/ai/rooms/not-a-room/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     assert.equal(response.status, 400);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("AI room routes require a signed guest session", async () => {
+  const app = createApp();
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch("http://127.0.0.1:" + port + "/api/ai/rooms/abcdef12/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: request().settings, prompt: "hello", action: "explain" }) });
+    assert.equal(response.status, 401);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

@@ -46,7 +46,7 @@ export const useMediaStore = create<MediaStoreState>((set, get) => {
     join: async (roomId, session) => {
       if (get().connectionState === "connecting" || get().connectionState === "connected" || get().connectionState === "reconnecting") return;
       set({ connectionState: "connecting", error: null });
-      try { const mediaSession = await api.createMediaSession(roomId, session.guestToken); await (await getClient()).connect(mediaSession); }
+      try { const mediaSession = await api.createMediaSession(roomId, session); await (await getClient()).connect(mediaSession); }
       catch (error) { set({ ...emptyMediaState(), connectionState: "failed", error: error instanceof Error ? error.message : "Unable to join the call." }); }
     },
     leave: async () => { if (client) await client.disconnect(); else set(emptyMediaState()); },

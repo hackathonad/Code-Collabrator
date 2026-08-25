@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
-    "@supabase/supabase-js": "^2.110.9",
     "livekit-client": "^2.22.0",
     "lucide-react": "^0.468.0",
     "monaco-editor": "^0.52.2",

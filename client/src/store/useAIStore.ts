@@ -79,7 +79,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const appendDelta = (delta: string) => { if (!isCurrent()) return; set((latest) => ({ conversations: updateConversation(latest.conversations, conversation.id, (entry) => ({ ...entry, updatedAt: Date.now(), messages: entry.messages.map((message) => message.id === assistant.id ? { ...message, content: message.content + delta } : message) })) })); };
     try {
       const history = conversation.messages.filter((message): message is AIConversationMessage & { role: "user" | "assistant" } => message.role === "user" || message.role === "assistant").slice(-8).map((message) => ({ role: message.role, content: message.content }));
-      const request = { roomId: context.roomId, guestToken: context.guestToken, action: state.action, prompt: userMessage.content, currentFileId: context.currentFileId, selectedCode: state.selection?.code, conversation: history, settings: state.settings, execution: context.execution };
+      const request = { roomId: context.roomId, guestToken: context.guestToken, action: state.action, prompt: userMessage.content, currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, conversation: history, settings: state.settings, execution: context.execution };
       set({ lifecycle: "connecting" });
       if (state.settings.streaming && provider.supportsStreaming) {
         set({ lifecycle: "streaming" });

@@ -16,6 +16,7 @@ interface ChatPanelProps {
 
 export const ChatPanel = ({ messages, participants, typingUsers, session, roomId, socketRef, onClose }: ChatPanelProps) => {
   const [message, setMessage] = useState("");
+  const [typingListOpen, setTypingListOpen] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const typingRef = useRef(false);
   const participantLookup = useMemo(
@@ -26,6 +27,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
     () => typingUsers.filter((participant) => participant.userId !== session.userId),
     [typingUsers, session.userId]
   );
+  const typingSummary = visibleTypingUsers.length === 1 ? "1 person typing…" : `${visibleTypingUsers.length} people typing…`;
 
   useEffect(() => {
     endRef.current?.scrollIntoView({
@@ -70,7 +72,8 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
     socketRef.current?.emit("chat:send", {
       roomId,
       userId: session.userId,
-      message: trimmed
+      message: trimmed,
+      messageId: crypto.randomUUID()
     });
     emitTyping(false);
     setMessage("");
@@ -93,6 +96,20 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
         </button>
       </div>
 
+      <div className="relative flex min-h-9 shrink-0 items-center border-b border-[var(--border)] px-3 text-[11px] text-[var(--text-muted)]">
+        {visibleTypingUsers.length ? (
+          <>
+            <button type="button" onClick={() => setTypingListOpen((open) => !open)} className="rounded-md px-1.5 py-1 text-left hover:bg-[var(--badge-bg)]" aria-expanded={typingListOpen}>
+              {typingSummary}
+            </button>
+            {typingListOpen ? <div className="absolute left-3 top-8 z-20 min-w-40 rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] p-2 shadow-xl">
+              <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-faint)]">Typing now</p>
+              {visibleTypingUsers.map((participant) => <p key={participant.userId} className="rounded px-1 py-1 text-xs text-[var(--text-secondary)]">{participant.username}</p>)}
+            </div> : null}
+          </>
+        ) : <span>Nobody is typing</span>}
+      </div>
+
       <div className="theme-chat-thread chat-feed min-h-0 flex-1 overflow-y-auto p-3">
         {messages.length || visibleTypingUsers.length ? (
           <div className="space-y-2">
@@ -106,7 +123,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
             })}
             {visibleTypingUsers.length ? (
               <div className="theme-surface chat-typing rounded-xl border px-3 py-2 text-xs text-[var(--text-muted)]">
-                {visibleTypingUsers.map((participant) => participant.username).join(", ")} typing...
+                {typingSummary}
               </div>
             ) : null}
             <div ref={endRef} />

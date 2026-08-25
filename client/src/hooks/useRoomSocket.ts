@@ -2,7 +2,6 @@
 import { io, type Socket } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 import { storage } from "../lib/storage";
-import { getAccessToken } from "../lib/supabase";
 import { useRoomStore } from "../store/useRoomStore";
 import { useMediaStore } from "../store/useMediaStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
@@ -11,7 +10,7 @@ const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.replace(/\/+$/, "") ?? "";
 
 const isVercelWithoutRealtimeBackend = () => !SOCKET_URL
   && typeof window !== "undefined"
-  && window.location.hostname.endsWith(".vercel.app");
+  && (window.location.hostname.endsWith(".vercel.app") || import.meta.env.PROD);
 
 const resolveSocketUrl = () => {
   if (SOCKET_URL) {
@@ -40,8 +39,7 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     setChatTypingState,
     setEditorTypingState,
     clearTypingUsers,
-    setCode,
-    setLanguage,
+    syncEditor,
     syncWorkspace
   } = useRoomStore();
 
@@ -59,17 +57,12 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     let disposed = false;
     let socket: Socket | null = null;
 
-    const connectSocket = async () => {
-      const accessToken = await getAccessToken();
-      if (disposed) {
-        return;
-      }
-
+    const connectSocket = () => {
+      if (disposed) return;
       const options = {
         transports: ["websocket", "polling"],
         reconnectionAttempts: 8,
         auth: {
-          accessToken,
           guestToken: session.guestToken
         }
       };
@@ -91,6 +84,7 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       socket.on("reconnect_attempt", () => setConnectionStatus("connecting"));
 
       socket.on("disconnect", (reason) => {
+        clearTypingUsers();
         setConnectionStatus(socket?.active ? "connecting" : "error");
         if (!socket?.active && reason !== "io client disconnect") {
           setError("Realtime connection disconnected. Refresh or rejoin if it does not recover.");
@@ -127,20 +121,26 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       });
 
       socket.on("editor:sync", (payload: { code: string; language: SupportedLanguage; version: number; fileId?: string }) => {
-        setLanguage(payload.language, payload.fileId);
-        setCode(payload.code, payload.version, payload.fileId);
+        syncEditor(payload.code, payload.language, payload.version, payload.fileId);
       });
 
       socket.on("room:deleted", () => {
         void useMediaStore.getState().leave();
         storage.removeRoom(roomId);
-        navigate("/");
+        navigate(window.location.pathname.startsWith("/guest/") ? "/guest" : "/app");
       });
 
-      socket.on("room:error", (message: string) => setError(message));
+      socket.on("room:error", (message: string) => {
+        setError(message);
+        if (/room not found|room no longer exists|room.*deleted/i.test(message)) {
+          storage.removeRoom(roomId);
+          setRoom(null);
+          navigate(window.location.pathname.startsWith("/guest/") ? "/guest" : "/app", { replace: true });
+        }
+      });
     };
 
-    void connectSocket();
+    connectSocket();
 
     return () => {
       disposed = true;
@@ -156,11 +156,10 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     replaceParticipants,
     roomId,
     session,
-    setCode,
     setConnectionStatus,
     setError,
     setHistory,
-    setLanguage,
+    syncEditor,
     setRoom,
     syncWorkspace,
     setChatTypingState,

@@ -61,16 +61,18 @@ export class GeminiProvider implements AIProviderAdapter {
     if (!reader) throw new AIProviderRequestError("Gemini did not provide a streaming response.", "STREAM_FAILED");
     const decoder = new TextDecoder(); let buffer = ""; let content = "";
     try {
+      const consume = (line: string) => {
+        if (!line.startsWith("data:")) return "";
+        let payload: GeminiPayload; try { payload = JSON.parse(line.slice(5).trim()) as GeminiPayload; } catch { throw new AIProviderRequestError("Gemini returned malformed streaming data.", "STREAM_FAILED"); }
+        return this.content(payload, false);
+      };
       while (true) {
         const chunk = await reader.read(); if (chunk.done) break;
         buffer += decoder.decode(chunk.value, { stream: true }); const parsed = linesFromChunk(buffer); buffer = parsed.remainder;
-        for (const line of parsed.complete) {
-          if (!line.startsWith("data:")) continue;
-          let payload: GeminiPayload; try { payload = JSON.parse(line.slice(5).trim()) as GeminiPayload; } catch { throw new AIProviderRequestError("Gemini returned malformed streaming data.", "STREAM_FAILED"); }
-          const delta = this.content(payload, false);
-          if (delta) { content += delta; yield { type: "delta", content: delta }; }
-        }
+        for (const line of parsed.complete) { const delta = consume(line); if (delta) { content += delta; yield { type: "delta", content: delta }; } }
       }
+      buffer += decoder.decode();
+      const finalDelta = consume(buffer); if (finalDelta) { content += finalDelta; yield { type: "delta", content: finalDelta }; }
       if (!content) throw new AIProviderRequestError("Gemini returned an empty streaming response.", "STREAM_FAILED");
       yield { type: "complete", result: { content, provider: "gemini", model, finishReason: "stop" } };
     } finally { reader.releaseLock(); }

@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { optionalAuth, verifyGuestSessionToken, type AuthenticatedRequest } from "../middleware/auth";
+import { guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
 import { aiService } from "../modules/ai/aiService";
 import {
   AICancelledError,
@@ -18,7 +18,6 @@ import { gitService } from "../modules/git/gitService";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
-import { analyticsService } from "../services/analyticsService";
 
 const router = Router();
 const REQUEST_WINDOW_MS = 60_000;
@@ -35,9 +34,7 @@ interface PreparedAIRequest {
   input: AIRequestInput;
   request: AICompletionRequest;
   context: ReturnType<typeof buildAIContext>;
-  analyticsUserId?: string;
   roomId: string;
-  workspaceId: string;
 }
 
 const sendError = (response: Response, status: number, message: string, code = "UNKNOWN_PROVIDER_ERROR") => response.status(status).json({ ok: false, message, code });
@@ -53,6 +50,7 @@ const rateLimit = (key: string) => {
   const current = requestWindows.get(key);
   if (!current || now - current.startedAt > REQUEST_WINDOW_MS) { requestWindows.set(key, { startedAt: now, count: 1 }); return true; }
   current.count += 1;
+  if (requestWindows.size > 5_000) for (const [rateKey, entry] of requestWindows) if (now - entry.startedAt > REQUEST_WINDOW_MS) requestWindows.delete(rateKey);
   return current.count <= REQUEST_LIMIT;
 };
 
@@ -84,17 +82,14 @@ const parseInput = (body: unknown): AIRequestInput | null => {
   if (!settings) return null;
   const executionRaw = raw.execution && typeof raw.execution === "object" ? raw.execution as Record<string, unknown> : null;
   const execution = executionRaw && clip(executionRaw.output, 6_000) ? { output: clip(executionRaw.output, 6_000), failed: Boolean(executionRaw.failed) } : undefined;
-  return { action, prompt: clip(raw.prompt, 4_000), currentFileId: clip(raw.currentFileId, 128) || undefined, selectedCode: clip(raw.selectedCode, 12_000) || undefined, conversation: parseConversation(raw.conversation), settings, execution };
+  return { action, prompt: clip(raw.prompt, 4_000), currentFileId: clip(raw.currentFileId, 128) || undefined, selectedCode: clip(raw.selectedCode, 12_000) || undefined, selectedCodeFileId: clip(raw.selectedCodeFileId, 128) || undefined, conversation: parseConversation(raw.conversation), settings, execution };
 };
 
-const prepareAIRequest = async (request: AuthenticatedRequest): Promise<PreparedAIRequest> => {
+const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIRequest> => {
   const roomId = sanitizeRoomId(request.params.roomId);
   const input = parseInput(request.body);
   if (!roomId || !input) throw new AIRequestRouteError(400, "A valid AI request is required");
-  const identity = request.identity;
-  const userId = identity.kind === "member"
-    ? identity.userId
-    : verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
+  const userId = verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
   if (!userId) throw new AIRequestRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
   if (!rateLimit(roomId + ":" + userId)) throw new AIRequestRouteError(429, "AI request limit reached. Please wait a moment.", "RATE_LIMITED");
   if (!(await loadRoomIfNeeded(roomId))) throw new AIRequestRouteError(404, "Room not found");
@@ -114,20 +109,8 @@ const prepareAIRequest = async (request: AuthenticatedRequest): Promise<Prepared
       settings: input.settings,
       metadata: { workspaceId: room.workspace.id, action: input.action, language: context.language }
     },
-    analyticsUserId: identity.kind === "member" ? identity.userId : undefined,
-    roomId,
-    workspaceId: room.workspace.id
+    roomId
   };
-};
-
-const trackAI = (prepared: PreparedAIRequest, type: "ai_request_completed" | "ai_request_failed", startedAt: number, streaming: boolean) => {
-  void analyticsService.record({
-    type,
-    userId: prepared.analyticsUserId,
-    roomId: prepared.roomId,
-    workspaceId: prepared.workspaceId,
-    metadata: { language: prepared.context.language, provider: prepared.input.settings.provider, model: prepared.input.settings.model, action: prepared.input.action, success: type === "ai_request_completed", durationMs: Date.now() - startedAt, streaming }
-  });
 };
 
 const respondToAIError = (response: Response, error: unknown) => {
@@ -142,24 +125,21 @@ router.get("/providers", async (_request, response) => {
   response.json({ ok: true, providers: await aiService.refreshProviders() });
 });
 
-router.post("/rooms/:roomId/complete", optionalAuth, async (request, response) => {
+router.post("/rooms/:roomId/complete", guestSession, async (request, response) => {
   let prepared: PreparedAIRequest | undefined;
-  const startedAt = Date.now();
   try {
-    prepared = await prepareAIRequest(request as AuthenticatedRequest);
+    prepared = await prepareAIRequest(request as GuestRequest);
     const result = await aiService.complete(prepared.input.settings.provider, prepared.request);
-    trackAI(prepared, "ai_request_completed", startedAt, false);
     response.json({ ok: true, result, context: { characterCount: prepared.context.characterCount, currentFileId: prepared.context.currentFile?.id ?? null, includedOpenFiles: prepared.context.openFiles.length } });
   } catch (error) {
-    if (prepared) trackAI(prepared, "ai_request_failed", startedAt, false);
     respondToAIError(response, error);
   }
 });
 
-router.post("/rooms/:roomId/stream", optionalAuth, async (request, response) => {
+router.post("/rooms/:roomId/stream", guestSession, async (request, response) => {
   let prepared: PreparedAIRequest;
   try {
-    prepared = await prepareAIRequest(request as AuthenticatedRequest);
+    prepared = await prepareAIRequest(request as GuestRequest);
   } catch (error) {
     respondToAIError(response, error);
     return;
@@ -170,8 +150,6 @@ router.post("/rooms/:roomId/stream", optionalAuth, async (request, response) => 
   response.setHeader("Connection", "keep-alive");
   response.flushHeaders();
   const abortController = new AbortController();
-  const startedAt = Date.now();
-  let completed = false;
   const abortIfDisconnected = () => {
     if (!response.writableEnded) abortController.abort();
   };
@@ -179,9 +157,9 @@ router.post("/rooms/:roomId/stream", optionalAuth, async (request, response) => 
   try {
     prepared.request.signal = abortController.signal;
     for await (const event of aiService.stream(prepared.input.settings.provider, prepared.request)) {
+      if (abortController.signal.aborted || response.writableEnded) break;
       response.write("data: " + JSON.stringify(event) + "\n\n");
     }
-    completed = true;
   } catch (error) {
     const message = error instanceof AICancelledError
       ? "AI generation was cancelled."
@@ -190,7 +168,6 @@ router.post("/rooms/:roomId/stream", optionalAuth, async (request, response) => 
       : "Unable to stream the AI response";
     response.write("data: " + JSON.stringify({ type: "error", message }) + "\n\n");
   } finally {
-    trackAI(prepared, completed ? "ai_request_completed" : "ai_request_failed", startedAt, true);
     response.off("close", abortIfDisconnected);
     response.end();
   }

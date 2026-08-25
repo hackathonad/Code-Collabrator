@@ -12,7 +12,7 @@ export interface AIProviderDescriptor { id: AIProviderId; label: string; configu
 export interface AISettings { provider: AIProviderId; model: string; temperature: number; maxTokens: number; streaming: boolean; systemPrompt?: string; workspaceContextSize: "minimal" | "standard" | "extended"; }
 export interface AIChatMessage { role: AIMessageRole; content: string; }
 export interface AIExecutionContext { output: string; failed: boolean; }
-export interface AIRequestInput { action: AIAction; prompt: string; currentFileId?: string; selectedCode?: string; conversation: AIChatMessage[]; settings: AISettings; execution?: AIExecutionContext; }
+export interface AIRequestInput { action: AIAction; prompt: string; currentFileId?: string; selectedCode?: string; selectedCodeFileId?: string; conversation: AIChatMessage[]; settings: AISettings; execution?: AIExecutionContext; }
 export interface AIContextPayload {
   workspaceId: string; workspaceName: string; language: SupportedLanguage;
   currentFile: { id: string; name: string; language: SupportedLanguage; content: string } | null;

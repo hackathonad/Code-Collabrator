@@ -2,9 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 export default defineConfig({
     plugins: [react()],
-    // This project was previously deployed with browser-safe Supabase values
-    // named NEXT_PUBLIC_*. Keep VITE_* as the preferred convention while making
-    // the current Vercel environment usable without duplicating credentials.
+    // Keep VITE_* as the only browser-exposed convention for deployment values.
     envPrefix: ["VITE_", "NEXT_PUBLIC_"],
     server: {
         host: "127.0.0.1",

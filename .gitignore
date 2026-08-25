@@ -8,6 +8,7 @@ dist
 coverage
 *.log
 .eslintcache
+*.tsbuildinfo
 
 
 .vercel

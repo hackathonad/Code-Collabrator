@@ -29,7 +29,7 @@ interface OllamaTagsPayload {
 }
 
 interface OllamaChatPayload {
-  message?: { content?: unknown };
+  message?: { content?: unknown; thinking?: unknown };
   done?: unknown;
 }
 
@@ -158,6 +158,11 @@ export class OllamaProvider implements AIProviderAdapter {
       model,
       messages: request.messages,
       stream,
+      // Reasoning-capable local models (including qwen3.5) otherwise place
+      // their entire answer in `message.thinking` and leave content empty.
+      // Ask Ollama for the user-facing answer while retaining compatibility
+      // with older models that ignore this field.
+      think: false,
       options: {
         temperature: request.settings.temperature,
         num_predict: request.settings.maxTokens
@@ -177,7 +182,9 @@ export class OllamaProvider implements AIProviderAdapter {
     } catch {
       throw new AIProviderRequestError("Ollama returned an invalid response.");
     }
-    const content = payload.message?.content;
+    const content = typeof payload.message?.content === "string" && payload.message.content.trim()
+      ? payload.message.content
+      : payload.message?.thinking;
     if (typeof content !== "string" || !content.trim()) throw new AIProviderRequestError("Ollama returned an empty response.");
     return { content, provider: "ollama", model, finishReason: payload.done === true ? "stop" : undefined };
   }
@@ -194,6 +201,14 @@ export class OllamaProvider implements AIProviderAdapter {
     let buffer = "";
     let content = "";
     try {
+      const consume = (line: string) => {
+        if (!line.trim()) return { type: "empty" as const };
+        let event: OllamaChatPayload;
+        try { event = JSON.parse(line) as OllamaChatPayload; } catch { throw new AIProviderRequestError("Ollama returned malformed streaming data."); }
+        const delta = event.message?.content;
+        if (typeof delta === "string" && delta) { content += delta; return { type: "delta" as const, content: delta }; }
+        return event.done === true ? { type: "complete" as const } : { type: "empty" as const };
+      };
       while (true) {
         const chunk = await reader.read();
         if (chunk.done) break;
@@ -201,20 +216,15 @@ export class OllamaProvider implements AIProviderAdapter {
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
         for (const line of lines) {
-          if (!line.trim()) continue;
-          let event: OllamaChatPayload;
-          try { event = JSON.parse(line) as OllamaChatPayload; } catch { throw new AIProviderRequestError("Ollama returned malformed streaming data."); }
-          const delta = event.message?.content;
-          if (typeof delta === "string" && delta) {
-            content += delta;
-            yield { type: "delta", content: delta };
-          }
-          if (event.done === true) {
-            yield { type: "complete", result: { content, provider: "ollama", model, finishReason: "stop" } };
-            return;
-          }
+          const event = consume(line);
+          if (event.type === "delta") yield event;
+          if (event.type === "complete") { yield { type: "complete", result: { content, provider: "ollama", model, finishReason: "stop" } }; return; }
         }
       }
+      buffer += decoder.decode();
+      const finalEvent = consume(buffer);
+      if (finalEvent.type === "delta") yield finalEvent;
+      if (finalEvent.type === "complete") { yield { type: "complete", result: { content, provider: "ollama", model, finishReason: "stop" } }; return; }
       if (!content) throw new AIProviderRequestError("Ollama returned an empty streaming response.");
       yield { type: "complete", result: { content, provider: "ollama", model, finishReason: "stop" } };
     } finally {

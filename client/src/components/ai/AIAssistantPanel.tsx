@@ -5,8 +5,20 @@ import { useAIStore } from "../../store/useAIStore";
 import type { AIAction, AIConversationMessage } from "../../types/ai";
 import type { UserSession } from "../../types/collaboration";
 
-interface AIAssistantPanelProps { roomId: string; workspaceId: string; currentFileId: string; session: UserSession; canInsert: boolean; onClose: () => void; onInsertCode: (code: string) => void; onReplaceSelection: (code: string) => void; onReplaceFile: (code: string) => void; }
-const actions: Array<{ id: AIAction; label: string }> = [{ id: "explain", label: "Explain" }, { id: "fix", label: "Fix" }, { id: "refactor", label: "Refactor" }, { id: "optimize", label: "Optimize" }, { id: "test", label: "Tests" }, { id: "document", label: "Document" }, { id: "review", label: "Review" }, { id: "summarize", label: "Project" }];
+interface AIAssistantPanelProps { roomId: string; workspaceId: string; currentFileId: string; session: UserSession; canInsert: boolean; execution?: { output: string; failed: boolean }; onClose: () => void; onInsertCode: (code: string) => void; onReplaceSelection: (code: string) => void; onReplaceFile: (code: string) => void; }
+const actions: Array<{ id: AIAction; label: string }> = [
+  { id: "explain", label: "Explain" },
+  { id: "generate", label: "Generate" },
+  { id: "fix", label: "Fix" },
+  { id: "optimize", label: "Optimize" },
+  { id: "refactor", label: "Refactor" },
+  { id: "test", label: "Tests" },
+  { id: "document", label: "Document" },
+  { id: "summarize", label: "Summarize" },
+  { id: "review", label: "Review" },
+  { id: "error", label: "Error" },
+  { id: "custom", label: "Custom" }
+];
 const fence = "`".repeat(3);
 
 const CodeBlock = ({ value, canInsert, hasSelection, onInsertCode, onReplaceSelection, onReplaceFile }: { value: string; canInsert: boolean; hasSelection: boolean; onInsertCode: (code: string) => void; onReplaceSelection: (code: string) => void; onReplaceFile: (code: string) => void }) => {
@@ -21,14 +33,14 @@ const MessageContent = ({ message, canInsert, hasSelection, onInsertCode, onRepl
   return <div className="space-y-2 text-sm leading-6 text-[var(--text-secondary)]">{parts.map((part, index) => index % 2 ? <CodeBlock key={index} value={part} canInsert={canInsert} hasSelection={hasSelection} onInsertCode={onInsertCode} onReplaceSelection={onReplaceSelection} onReplaceFile={onReplaceFile} /> : part ? <p key={index} className="whitespace-pre-wrap">{part}</p> : null)}</div>;
 };
 
-export const AIAssistantPanel = ({ roomId, workspaceId, currentFileId, session, canInsert, onClose, onInsertCode, onReplaceSelection, onReplaceFile }: AIAssistantPanelProps) => {
-  const ai = useAIStore(); const [settingsOpen, setSettingsOpen] = useState(false); const [followLatest, setFollowLatest] = useState(true); const endRef = useRef<HTMLDivElement | null>(null);
+export const AIAssistantPanel = ({ roomId, workspaceId, currentFileId, session, canInsert, execution, onClose, onInsertCode, onReplaceSelection, onReplaceFile }: AIAssistantPanelProps) => {
+  const ai = useAIStore(); const initializeAI = useAIStore((state) => state.initialize); const [settingsOpen, setSettingsOpen] = useState(false); const [followLatest, setFollowLatest] = useState(true); const endRef = useRef<HTMLDivElement | null>(null);
   const conversation = ai.conversations.find((entry) => entry.id === ai.activeConversationId) ?? null; const provider = ai.providers.find((entry) => entry.id === ai.settings.provider); const models = provider?.models ?? [];
   const providerReady = Boolean(provider?.available && models.some((model) => model.id === ai.settings.model)); const scopedConversations = ai.conversations.filter((entry) => entry.roomId === roomId && entry.workspaceId === workspaceId).sort((left, right) => right.updatedAt - left.updatedAt);
   const generating = ai.generating; const lifecycleLabel = ai.lifecycle === "preparing-context" ? "Preparing context…" : ai.lifecycle === "connecting" ? "Connecting…" : ai.lifecycle === "streaming" ? "Generating…" : ai.lifecycle === "cancelled" ? "Generation cancelled" : ai.lifecycle === "failed" ? "Generation failed" : "";
-  const context = { roomId, workspaceId, currentFileId, guestToken: session.guestToken };
+  const context = { roomId, workspaceId, currentFileId, guestToken: session.guestToken, execution };
 
-  useEffect(() => { void ai.initialize(roomId, workspaceId); }, [roomId, workspaceId]);
+  useEffect(() => { void initializeAI(roomId, workspaceId); }, [initializeAI, roomId, workspaceId]);
   useEffect(() => { if (followLatest) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [conversation?.messages.length, followLatest]);
   const send = () => void ai.send(context);
   const changeProvider = (providerId: typeof ai.settings.provider) => { const next = ai.providers.find((entry) => entry.id === providerId); ai.setSettings({ provider: providerId, model: next?.defaultModel ?? next?.models[0]?.id ?? "" }); };

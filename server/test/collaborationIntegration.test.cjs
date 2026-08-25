@@ -20,10 +20,10 @@ const waitFor = (socket, event, predicate = () => true, timeoutMs = 5_000) => ne
   socket.on(event, listener);
 });
 
-const postJson = async (url, body) => {
+const postJson = async (url, body, headers = {}) => {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...headers },
     body: JSON.stringify(body)
   });
   return { status: response.status, body: await response.json() };
@@ -51,6 +51,9 @@ test("room REST and Socket.IO collaboration preserve workspace, history, presenc
   const sockets = [];
 
   try {
+    const unsupportedBearerHeader = await postJson(`${baseUrl}/api/rooms`, { username: "Spoof", language: "javascript" }, { Authorization: "Bearer invalid-token" });
+    assert.equal(unsupportedBearerHeader.status, 401, "an unsupported bearer header must not fall back to guest identity");
+
     const created = await postJson(`${baseUrl}/api/rooms`, { username: "Owner", language: "javascript" });
     assert.equal(created.status, 201);
     assert.ok(created.body.participant.guestToken);
@@ -62,9 +65,25 @@ test("room REST and Socket.IO collaboration preserve workspace, history, presenc
     assert.ok(joined.body.participant.guestToken);
     const guest = joined.body.participant;
 
+    const invalidJoin = await postJson(`${baseUrl}/api/rooms/${roomId}/join`, { username: "Spoof", guestToken: "not-a-valid-session" });
+    assert.equal(invalidJoin.status, 401);
+    const guestRead = await fetch(`${baseUrl}/api/rooms/${roomId}?guestToken=${encodeURIComponent(guest.guestToken)}`);
+    assert.equal(guestRead.status, 200);
+    const invalidRead = await fetch(`${baseUrl}/api/rooms/${roomId}?guestToken=not-a-valid-session`);
+    assert.equal(invalidRead.status, 403);
+
     const { socket: ownerSocket } = await connectParticipant(baseUrl, roomId, owner);
     const { socket: guestSocket } = await connectParticipant(baseUrl, roomId, guest);
     sockets.push(ownerSocket, guestSocket);
+
+    const nonOwnerDelete = await fetch(`${baseUrl}/api/rooms/${roomId}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestToken: guest.guestToken })
+    });
+    assert.equal(nonOwnerDelete.status, 403);
+    const nonOwnerSocketDelete = await new Promise((resolve) => guestSocket.emit("room:delete", { roomId, actingUserId: guest.userId }, resolve));
+    assert.equal(nonOwnerSocketDelete.ok, false);
 
     const codeSync = waitFor(guestSocket, "editor:sync", (payload) => payload.code === "console.log('shared');");
     ownerSocket.emit("editor:update", { roomId, userId: owner.userId, code: "console.log('shared');", fileId: created.body.room.workspace.activeFileId });
@@ -113,6 +132,8 @@ test("room REST and Socket.IO collaboration preserve workspace, history, presenc
     await deleted;
     const missing = await fetch(`${baseUrl}/api/rooms/${roomId}`);
     assert.equal(missing.status, 404);
+    const deletedJoin = await postJson(`${baseUrl}/api/rooms/${roomId}/join`, { username: "Late guest" });
+    assert.equal(deletedJoin.status, 404);
   } finally {
     sockets.forEach((socket) => socket.disconnect());
     await new Promise((resolve) => io.close(resolve));

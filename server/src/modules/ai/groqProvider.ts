@@ -49,15 +49,19 @@ export class GroqProvider implements AIProviderAdapter {
     if (!reader) throw new AIProviderRequestError("Groq did not provide a streaming response.", "STREAM_FAILED");
     const decoder = new TextDecoder(); let buffer = ""; let content = "";
     try {
+      const consume = (line: string) => {
+        if (!line.startsWith("data:")) return { delta: "", done: false };
+        const data = line.slice(5).trim(); if (data === "[DONE]") return { delta: "", done: true };
+        let payload: GroqPayload; try { payload = JSON.parse(data) as GroqPayload; } catch { throw new AIProviderRequestError("Groq returned malformed streaming data.", "STREAM_FAILED"); }
+        return { delta: this.text(payload, true), done: false };
+      };
       while (true) {
         const chunk = await reader.read(); if (chunk.done) break;
         buffer += decoder.decode(chunk.value, { stream: true }); const parsed = linesFromChunk(buffer); buffer = parsed.remainder;
-        for (const line of parsed.complete) {
-          if (!line.startsWith("data:")) continue; const data = line.slice(5).trim(); if (data === "[DONE]") { yield { type: "complete", result: { content, provider: "groq", model, finishReason: "stop" } }; return; }
-          let payload: GroqPayload; try { payload = JSON.parse(data) as GroqPayload; } catch { throw new AIProviderRequestError("Groq returned malformed streaming data.", "STREAM_FAILED"); }
-          const delta = this.text(payload, true); if (delta) { content += delta; yield { type: "delta", content: delta }; }
-        }
+        for (const line of parsed.complete) { const event = consume(line); if (event.delta) { content += event.delta; yield { type: "delta", content: event.delta }; } if (event.done) { yield { type: "complete", result: { content, provider: "groq", model, finishReason: "stop" } }; return; } }
       }
+      buffer += decoder.decode();
+      const finalEvent = consume(buffer); if (finalEvent.delta) { content += finalEvent.delta; yield { type: "delta", content: finalEvent.delta }; } if (finalEvent.done) { yield { type: "complete", result: { content, provider: "groq", model, finishReason: "stop" } }; return; }
       if (!content) throw new AIProviderRequestError("Groq returned an empty streaming response.", "STREAM_FAILED");
       yield { type: "complete", result: { content, provider: "groq", model, finishReason: "stop" } };
     } finally { reader.releaseLock(); }

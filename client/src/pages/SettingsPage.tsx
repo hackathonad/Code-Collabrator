@@ -1,22 +1,44 @@
-import { Github, LoaderCircle } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { AppLogo } from "../components/ui/AppLogo";
 import { ThemeToggle } from "../components/ui/ThemeToggle";
-import { useAuth } from "../context/AuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { api } from "../lib/api";
-
-interface GithubStatus { configured: boolean; connection: { connected: boolean; login?: string; avatarUrl?: string | null; connectedAt?: string; }; }
-interface GithubRepository { id: string; fullName: string; private: boolean; description: string | null; defaultBranch: string; language: string | null; updatedAt: string; }
 
 export const SettingsPage = () => {
-  const { user } = useAuth(); const { themeId } = useTheme(); const [searchParams] = useSearchParams();
-  const [github, setGithub] = useState<GithubStatus | null>(null); const [loadingGithub, setLoadingGithub] = useState(true); const [githubError, setGithubError] = useState<string | null>(searchParams.get("github") === "failed" ? "GitHub connection was not completed. Please try again." : null); const [repositories, setRepositories] = useState<GithubRepository[]>([]); const [query, setQuery] = useState(""); const [loadingRepositories, setLoadingRepositories] = useState(false);
-  const refreshGithub = async () => { setLoadingGithub(true); try { setGithub(await api.getGitHubStatus()); } catch (issue) { setGithubError(issue instanceof Error ? issue.message : "GitHub status is unavailable."); } finally { setLoadingGithub(false); } };
-  useEffect(() => { void refreshGithub(); }, []);
-  useEffect(() => { if (!github?.connection.connected) return; const timer = window.setTimeout(() => { setLoadingRepositories(true); void api.listGitHubRepositories(query).then((result) => setRepositories(result.repositories)).catch((issue) => setGithubError(issue instanceof Error ? issue.message : "Repositories could not be loaded.")).finally(() => setLoadingRepositories(false)); }, 250); return () => window.clearTimeout(timer); }, [github?.connection.connected, query]);
-  const connect = async () => { try { const result = await api.beginGitHubConnection("/settings"); window.location.assign(result.authorizeUrl); } catch (issue) { setGithubError(issue instanceof Error ? issue.message : "GitHub connection could not be started."); } };
-  const disconnect = async () => { if (!window.confirm("Disconnect GitHub? Your local workspace remains unchanged.")) return; await api.disconnectGitHub(); setGithub({ configured: github?.configured ?? false, connection: { connected: false } }); setRepositories([]); };
-  return <main className="theme-page-home min-h-screen px-4 py-8"><div className="mx-auto grid max-w-3xl gap-5"><nav className="theme-panel-solid flex items-center justify-between rounded-2xl border p-4 shadow-panel"><div className="flex items-center gap-3"><AppLogo size={34} /><div><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Account</p><h1 className="font-display text-2xl">Settings</h1></div></div><div className="flex gap-2"><ThemeToggle /><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/profile">Profile</Link></div></nav><section className="theme-panel rounded-2xl border p-6 shadow-panel"><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Appearance</p><h2 className="mt-2 font-display text-xl">Theme</h2><p className="mt-1 text-sm theme-text-muted">Current theme: {themeId}. Use the theme control in the header to switch it; this stays local and needs no network request.</p></section><section className="theme-panel rounded-2xl border p-6 shadow-panel"><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Account</p><h2 className="mt-2 font-display text-xl">Supabase session</h2><p className="mt-1 text-sm theme-text-muted">Signed in as {user?.email}. Session refresh and multi-tab sign-out are handled by Supabase.</p><Link to="/forgot-password" className="mt-4 inline-block text-sm text-sky-300">Reset password</Link></section><section className="theme-panel rounded-2xl border p-6 shadow-panel"><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">GitHub</p><h2 className="mt-2 font-display text-xl">Repository connection</h2>{loadingGithub ? <p className="mt-3 flex items-center gap-2 text-sm theme-text-muted"><LoaderCircle className="h-4 w-4 animate-spin" />Checking GitHub connection…</p> : github?.connection.connected ? <><div className="mt-3 flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl border border-[var(--border)]">{github.connection.avatarUrl ? <img src={github.connection.avatarUrl} alt="GitHub avatar" className="h-full w-full object-cover" /> : <Github className="h-5 w-5" />}</div><div><p className="font-medium">@{github.connection.login}</p><p className="text-xs theme-text-muted">Connected {github.connection.connectedAt ? new Date(github.connection.connectedAt).toLocaleDateString() : ""}</p></div></div><button type="button" onClick={() => void disconnect()} className="theme-button-neutral mt-4 rounded-lg border px-3 py-2 text-sm">Disconnect GitHub</button><label className="mt-5 grid gap-1 text-sm theme-text-muted">Search repositories<input className="theme-input rounded-lg border px-3 py-2" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="owner/repository" /></label><div className="mt-3 grid gap-2">{loadingRepositories ? <p className="text-sm theme-text-muted">Loading repositories…</p> : repositories.length ? repositories.slice(0, 20).map((repository) => <article key={repository.id} className="theme-surface rounded-lg border px-3 py-2"><div className="flex justify-between gap-3"><p className="font-medium">{repository.fullName}</p><span className="text-xs theme-text-muted">{repository.private ? "Private" : "Public"}</span></div><p className="mt-1 text-xs theme-text-muted">{repository.language ?? "Code"} · {repository.defaultBranch}</p>{repository.description ? <p className="mt-1 text-xs theme-text-faint">{repository.description}</p> : null}</article>) : <p className="text-sm theme-text-muted">No repositories found.</p>}</div></> : <><p className="mt-1 text-sm theme-text-muted">GitHub is optional. Connect it to browse repositories without exposing tokens to the browser.</p><button type="button" disabled={!github?.configured} onClick={() => void connect()} className="theme-button-primary mt-4 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm disabled:opacity-50"><Github className="h-4 w-4" />Connect GitHub</button>{github && !github.configured ? <p className="mt-3 text-xs theme-text-muted">The server needs GitHub OAuth and token-encryption environment variables before this can be enabled.</p> : null}</>}{githubError ? <p role="alert" className="mt-3 text-sm text-rose-300">{githubError}</p> : null}</section><section className="theme-panel rounded-2xl border p-6 shadow-panel"><p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Media</p><p className="mt-2 text-sm theme-text-muted">Choose microphone, camera, and speaker inside a room call. Opening settings never requests device permission.</p></section></div></main>;
+  const { themeId } = useTheme();
+
+  return (
+    <main className="theme-page-home min-h-screen px-4 py-8">
+      <div className="mx-auto grid max-w-3xl gap-5">
+        <nav className="theme-panel-solid flex flex-wrap items-center justify-between gap-3 rounded-2xl border p-4 shadow-panel">
+          <div className="flex items-center gap-3">
+            <AppLogo size={34} />
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Workspace preferences</p>
+              <h1 className="font-display text-2xl">Settings</h1>
+            </div>
+          </div>
+          <div className="flex gap-2"><ThemeToggle /><Link className="theme-button-neutral rounded-lg border px-3 py-2 text-sm" to="/">Home</Link></div>
+        </nav>
+
+        <section className="theme-panel rounded-2xl border p-6 shadow-panel">
+          <p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Appearance</p>
+          <h2 className="mt-2 font-display text-xl theme-text-primary">Local theme</h2>
+          <p className="mt-1 text-sm theme-text-muted">Current theme: {themeId}. Theme choices stay in this browser and never require an account.</p>
+          <div className="mt-4"><ThemeToggle /></div>
+        </section>
+
+        <section className="theme-panel rounded-2xl border p-6 shadow-panel">
+          <p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Guest sessions</p>
+          <h2 className="mt-2 font-display text-xl theme-text-primary">Room identity stays local</h2>
+          <p className="mt-2 text-sm leading-6 theme-text-muted">Your display name, room session, and Quick Rejoin entries are stored locally in this browser. Rooms do not require registration.</p>
+        </section>
+
+        <section className="theme-panel rounded-2xl border p-6 shadow-panel">
+          <p className="text-xs uppercase tracking-[0.2em] theme-text-faint">Calls and integrations</p>
+          <h2 className="mt-2 font-display text-xl theme-text-primary">Optional room services</h2>
+          <p className="mt-2 text-sm leading-6 theme-text-muted">Microphone, camera, screen sharing, AI, and repository status are configured from inside a room when the server supports them.</p>
+        </section>
+      </div>
+    </main>
+  );
 };

@@ -1,7 +1,4 @@
 User-agent: *
 Allow: /
 Disallow: /room/
-Disallow: /dashboard
-Disallow: /profile
 Disallow: /settings
-Disallow: /auth/

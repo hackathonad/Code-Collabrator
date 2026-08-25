@@ -1,10 +1,8 @@
 import type { Server, Socket } from "socket.io";
 import { roomStore } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
-import { resolveIdentityFromToken, verifyGuestSessionToken } from "../middleware/auth";
+import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
-import { profileService } from "../services/profileService";
-import { analyticsService } from "../services/analyticsService";
 import {
   isEditableRole,
   isRecord,
@@ -42,6 +40,7 @@ interface LanguagePayload extends JoinPayload {
 
 interface ChatPayload extends JoinPayload {
   message: string;
+  messageId?: string;
 }
 
 interface TypingPayload extends JoinPayload {
@@ -70,6 +69,7 @@ const chatTypingTimers = new Map<string, NodeJS.Timeout>();
 const editorTypingTimers = new Map<string, NodeJS.Timeout>();
 const rateLimitWindows = new Map<string, { startedAt: number; count: number }>();
 const persistenceTimers = new Map<string, NodeJS.Timeout>();
+const pendingPersistenceSnapshots = new Map<string, ReturnType<typeof roomStore.getRoomSnapshot>>();
 const IDLE_TIMEOUT_MS = 20_000;
 const CHAT_TYPING_TIMEOUT_MS = 2_500;
 const EDITOR_TYPING_TIMEOUT_MS = 1_800;
@@ -78,7 +78,7 @@ const RATE_LIMIT_MAX_EVENTS = 80;
 const EDITOR_PERSIST_DEBOUNCE_MS = 1_500;
 
 /** Clears server-owned timers during a controlled process shutdown. */
-export const clearCollaborationRuntime = () => {
+export const clearCollaborationRuntime = async () => {
   for (const timer of presenceTimers.values()) clearTimeout(timer);
   for (const timer of chatTypingTimers.values()) clearTimeout(timer);
   for (const timer of editorTypingTimers.values()) clearTimeout(timer);
@@ -86,9 +86,13 @@ export const clearCollaborationRuntime = () => {
   presenceTimers.clear();
   chatTypingTimers.clear();
   editorTypingTimers.clear();
+  const pendingSnapshots = [...pendingPersistenceSnapshots.values()];
   persistenceTimers.clear();
+  pendingPersistenceSnapshots.clear();
   rateLimitWindows.clear();
   socketRoomBindings.clear();
+  await Promise.all(pendingSnapshots.map((snapshot) => roomPersistence.saveRoom(snapshot)));
+  await roomPersistence.flush();
 };
 
 const participantKey = (roomId: string, userId: string) => `${roomId}:${userId}`;
@@ -162,7 +166,8 @@ const parseChatPayload = (payload: unknown): ChatPayload | null => {
   }
 
   const message = sanitizeMessage(payload.message);
-  return message ? { ...base, message } : null;
+  const messageId = typeof payload.messageId === "string" && payload.messageId.length <= 128 ? payload.messageId : undefined;
+  return message ? { ...base, message, messageId } : null;
 };
 
 const parseTypingPayload = (payload: unknown): TypingPayload | null => {
@@ -217,7 +222,12 @@ const parseRolePayload = (payload: unknown): RolePayload | null => {
 
 const isCurrentBinding = (socket: Socket, roomId: string, userId: string) => {
   const binding = socketRoomBindings.get(socket.id);
-  return Boolean(binding && binding.roomId === roomId && binding.userId === userId);
+  if (!binding || binding.roomId !== roomId || binding.userId !== userId) return false;
+  try {
+    return roomStore.getParticipant(roomId, userId).socketId === socket.id;
+  } catch {
+    return false;
+  }
 };
 
 const loadRoomIfNeeded = async (roomId: string) => {
@@ -236,12 +246,6 @@ const loadRoomIfNeeded = async (roomId: string) => {
 
 const resolveSocketUserId = async (socket: Socket, roomId: string) => {
   const auth = socket.handshake.auth as Record<string, unknown> | undefined;
-  const accessToken = typeof auth?.accessToken === "string" ? auth.accessToken : "";
-  if (accessToken) {
-    const identity = await resolveIdentityFromToken(accessToken);
-    return identity?.userId ?? "";
-  }
-
   const guestToken = typeof auth?.guestToken === "string" ? auth.guestToken : "";
   return verifyGuestSessionToken(roomId, guestToken);
 };
@@ -254,8 +258,10 @@ export const registerCollaborationSocket = (io: Server) => {
   const scheduleRoomPersistence = (snapshot: ReturnType<typeof roomStore.getRoomSnapshot>) => {
     const timer = persistenceTimers.get(snapshot.roomId);
     if (timer) clearTimeout(timer);
+    pendingPersistenceSnapshots.set(snapshot.roomId, snapshot);
     persistenceTimers.set(snapshot.roomId, setTimeout(() => {
       persistenceTimers.delete(snapshot.roomId);
+      pendingPersistenceSnapshots.delete(snapshot.roomId);
       void roomPersistence.saveRoom(snapshot);
     }, EDITOR_PERSIST_DEBOUNCE_MS));
   };
@@ -348,6 +354,7 @@ export const registerCollaborationSocket = (io: Server) => {
   const clearRoomTracking = (roomId: string) => {
     const persistenceTimer = persistenceTimers.get(roomId);
     if (persistenceTimer) { clearTimeout(persistenceTimer); persistenceTimers.delete(roomId); }
+    pendingPersistenceSnapshots.delete(roomId);
     for (const [socketId, binding] of socketRoomBindings.entries()) {
       if (binding.roomId === roomId) {
         clearPresenceTimer(binding.roomId, binding.userId);
@@ -393,27 +400,46 @@ export const registerCollaborationSocket = (io: Server) => {
     }
   };
 
-  const handleDeleteRoom = (payload: OwnerActionPayload, socket: Socket) => {
+  const handleDeleteRoom = async (payload: OwnerActionPayload, socket: Socket, acknowledge?: (reply: { ok: boolean; message?: string }) => void) => {
     try {
       if (!isCurrentBinding(socket, payload.roomId, payload.actingUserId)) {
-        reject(socket);
+        const message = "Invalid room event payload";
+        reject(socket, message);
+        acknowledge?.({ ok: false, message });
+        return;
+      }
+      if (roomStore.getRoomSnapshot(payload.roomId).ownerId !== payload.actingUserId) {
+        const message = "Only the owner can delete the room";
+        reject(socket, message);
+        acknowledge?.({ ok: false, message });
+        return;
+      }
+      const persisted = await roomPersistence.deleteRoom(payload.roomId);
+      if (!persisted) {
+        const message = "The room could not be deleted from persistence. Try again shortly.";
+        reject(socket, message);
+        acknowledge?.({ ok: false, message });
         return;
       }
       roomStore.deleteRoom(payload.roomId, payload.actingUserId);
-      void Promise.all([roomPersistence.deleteRoom(payload.roomId), profileService.removeRoomReferences(payload.roomId)]);
       io.to(payload.roomId).emit("room:deleted");
       clearRoomTracking(payload.roomId);
       io.in(payload.roomId).socketsLeave(payload.roomId);
+      acknowledge?.({ ok: true });
     } catch (error) {
-      reject(socket, error instanceof Error ? error.message : "Unable to delete room");
+      const message = error instanceof Error ? error.message : "Unable to delete room";
+      reject(socket, message);
+      acknowledge?.({ ok: false, message });
     }
   };
 
   io.on("connection", (socket) => {
-    socket.onAny(() => {
+    socket.use((_event, next) => {
       if (!checkRateLimit(socket)) {
         reject(socket, "Too many realtime events. Please slow down.");
+        return;
       }
+      next();
     });
 
     socket.on("room:join", async (rawPayload: unknown) => {
@@ -435,6 +461,11 @@ export const registerCollaborationSocket = (io: Server) => {
           return;
         }
         payload.userId = resolvedUserId;
+
+        const existingParticipant = roomStore.getParticipant(payload.roomId, payload.userId);
+        if (existingParticipant.socketId && existingParticipant.socketId !== socket.id) {
+          io.sockets.sockets.get(existingParticipant.socketId)?.disconnect(true);
+        }
 
         const previousBinding = socketRoomBindings.get(socket.id);
         if (previousBinding && previousBinding.roomId !== payload.roomId) {
@@ -487,10 +518,6 @@ export const registerCollaborationSocket = (io: Server) => {
         return;
       }
       try {
-        const before = roomStore.getRoomSnapshot(payload.roomId);
-        const removedFile = payload.operation.type === "delete" && payload.operation.nodeId
-          ? before.workspace.files[payload.operation.nodeId]
-          : undefined;
         const result = roomStore.applyWorkspaceOperation(payload.roomId, payload.userId, payload.operation);
         if (!result.duplicate) {
           markParticipantActive(payload.roomId, payload.userId);
@@ -503,13 +530,6 @@ export const registerCollaborationSocket = (io: Server) => {
             updatedBy: payload.userId
           });
           void roomPersistence.saveRoom(result.room);
-          const participant = roomStore.getParticipant(payload.roomId, payload.userId);
-          if (participant.identityKind === "member" && payload.operation.type === "create-file") {
-            void analyticsService.record({ type: "file_created", userId: participant.userId, roomId: payload.roomId, workspaceId: result.room.workspace.id, metadata: { language: result.room.workspace.files[result.room.workspace.activeFileId]?.language ?? result.room.language } });
-          }
-          if (participant.identityKind === "member" && removedFile) {
-            void analyticsService.record({ type: "file_deleted", userId: participant.userId, roomId: payload.roomId, workspaceId: result.room.workspace.id, metadata: { language: removedFile.language } });
-          }
         }
       } catch (error) {
         reject(socket, error instanceof Error ? error.message : "Unable to update workspace");
@@ -594,7 +614,7 @@ export const registerCollaborationSocket = (io: Server) => {
       try {
         clearTypingTimer(chatTypingTimers, payload.roomId, payload.userId);
         emitTyping("chat:typing", payload.roomId, payload.userId, false);
-        const message = roomStore.addChatMessage(payload.roomId, payload.userId, payload.message);
+        const message = roomStore.addChatMessage(payload.roomId, payload.userId, payload.message, payload.messageId);
         const participant = roomStore.getParticipant(payload.roomId, payload.userId);
         io.to(payload.roomId).emit("presence:update", participant);
         scheduleIdleStatus(payload.roomId, payload.userId);
@@ -668,14 +688,15 @@ export const registerCollaborationSocket = (io: Server) => {
       handleRestartRoom(payload, socket, acknowledge);
     });
 
-    socket.on("room:delete", (rawPayload: unknown) => {
+    socket.on("room:delete", (rawPayload: unknown, acknowledge?: (reply: { ok: boolean; message?: string }) => void) => {
       const payload = parseOwnerActionPayload(rawPayload);
       if (!payload) {
         reject(socket);
+        acknowledge?.({ ok: false, message: "Invalid room event payload" });
         return;
       }
 
-      handleDeleteRoom(payload, socket);
+      void handleDeleteRoom(payload, socket, acknowledge);
     });
 
     socket.on("disconnect", () => {

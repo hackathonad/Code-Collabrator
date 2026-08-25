@@ -58,8 +58,9 @@ export const ParticipantsPanel = ({
     socketRef.current?.emit("room:delete", {
       roomId,
       actingUserId: session.userId
+    }, (reply: { ok: boolean; message?: string }) => {
+      onNotify(reply.ok ? "Room deleted" : reply.message ?? "Unable to delete room");
     });
-    onNotify("Room deleted");
   };
 
   return (

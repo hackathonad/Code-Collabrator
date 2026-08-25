@@ -1,11 +1,9 @@
 ﻿import { Router } from "express";
-import { optionalAuth, verifyGuestSessionToken, createGuestSessionToken, type AuthenticatedRequest } from "../middleware/auth";
+import { createGuestSessionToken, guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
-import { profileService } from "../services/profileService";
 import { gitService } from "../modules/git/gitService";
-import { sanitizeLanguage, sanitizeRoomId, sanitizeUsername } from "../utils/validation";
-import { analyticsService } from "../services/analyticsService";
+import { isSupportedLanguage, sanitizeLanguage, sanitizeRoomId, sanitizeUsername } from "../utils/validation";
 
 const router = Router();
 
@@ -14,6 +12,14 @@ const sendError = (response: { status: (status: number) => { json: (payload: unk
     ok: false,
     message
   });
+};
+
+const roomErrorStatus = (error: unknown, fallback = 400) => {
+  const message = error instanceof Error ? error.message : "";
+  if (/not found/i.test(message)) return 404;
+  if (/permission denied|only the owner|valid room session/i.test(message)) return 403;
+  if (/paused|already exists|conflict/i.test(message)) return 409;
+  return fallback;
 };
 
 const loadRoomIfNeeded = async (roomId: string) => {
@@ -30,20 +36,19 @@ const loadRoomIfNeeded = async (roomId: string) => {
   return true;
 };
 
-const participantResponse = (roomId: string, userId: string, identityKind: "guest" | "member") => ({
-  identityKind,
-  guestToken: identityKind === "guest" ? createGuestSessionToken(roomId, userId) : undefined
+const participantResponse = (roomId: string, userId: string) => ({
+  identityKind: "guest" as const,
+  guestToken: createGuestSessionToken(roomId, userId)
 });
 
-const guestTokenFrom = (request: AuthenticatedRequest) => {
+const guestTokenFrom = (request: GuestRequest) => {
   const bodyToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
   const queryToken = typeof request.query.guestToken === "string" ? request.query.guestToken : "";
   return bodyToken || queryToken;
 };
 
-const roomParticipantId = (request: AuthenticatedRequest, roomId: string) => {
-  const identity = request.identity;
-  const userId = identity.kind === "member" ? identity.userId : verifyGuestSessionToken(roomId, guestTokenFrom(request));
+const roomParticipantId = (request: GuestRequest, roomId: string) => {
+  const userId = verifyGuestSessionToken(roomId, guestTokenFrom(request));
   if (!userId) return "";
   try {
     roomStore.getParticipant(roomId, userId);
@@ -53,8 +58,8 @@ const roomParticipantId = (request: AuthenticatedRequest, roomId: string) => {
   }
 };
 
-router.post("/", optionalAuth, async (request, response) => {
-  const identity = (request as AuthenticatedRequest).identity;
+router.post("/", guestSession, async (request, response) => {
+  const identity = (request as GuestRequest).identity;
   const requestedUsername = sanitizeUsername(request.body?.username);
   const username = requestedUsername || identity.displayName;
   const language = sanitizeLanguage(request.body?.language);
@@ -63,18 +68,18 @@ router.post("/", optionalAuth, async (request, response) => {
     sendError(response, 400, "Display name is required");
     return;
   }
+  if (request.body?.language !== undefined && !isSupportedLanguage(request.body.language)) {
+    sendError(response, 400, "Unsupported room language");
+    return;
+  }
 
   const created = roomStore.createRoom(username, language, {
     userId: identity.userId,
-    identityKind: identity.kind,
+    identityKind: "guest",
     avatarUrl: identity.avatarUrl
   });
 
-  await Promise.all([
-    roomPersistence.saveRoom(created.room),
-    profileService.ensureProfile(identity, username, created.room.roomId),
-    profileService.touchRecentRoom(identity, created.room.roomId, `Room ${created.room.roomId}`)
-  ]);
+  await roomPersistence.saveRoom(created.room);
 
   response.status(201).json({
     ok: true,
@@ -82,20 +87,13 @@ router.post("/", optionalAuth, async (request, response) => {
     participant: {
       userId: created.participant.userId,
       username: created.participant.username,
-      ...participantResponse(created.room.roomId, created.participant.userId, identity.kind)
+      ...participantResponse(created.room.roomId, created.participant.userId)
     }
-  });
-  void analyticsService.record({
-    type: "room_created",
-    userId: identity.kind === "member" ? identity.userId : undefined,
-    roomId: created.room.roomId,
-    workspaceId: created.room.workspace.id,
-    metadata: { language }
   });
 });
 
-router.post("/:roomId/join", optionalAuth, async (request, response) => {
-  const identity = (request as AuthenticatedRequest).identity;
+router.post("/:roomId/join", guestSession, async (request, response) => {
+  const identity = (request as GuestRequest).identity;
   const roomId = sanitizeRoomId(request.params.roomId);
   const username = sanitizeUsername(request.body?.username) || identity.displayName;
 
@@ -115,17 +113,20 @@ router.post("/:roomId/join", optionalAuth, async (request, response) => {
       return;
     }
 
-    const guestUserId = identity.kind === "guest" ? verifyGuestSessionToken(roomId, request.body?.guestToken) : undefined;
+    const suppliedToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
+    const guestUserId = suppliedToken ? verifyGuestSessionToken(roomId, suppliedToken) : identity.userId;
+    if (suppliedToken && !guestUserId) {
+      sendError(response, 401, "A valid room session is required");
+      return;
+    }
     const joined = roomStore.joinRoom(roomId, username, guestUserId, {
-      userId: identity.kind === "member" ? identity.userId : guestUserId || identity.userId,
-      identityKind: identity.kind,
+      userId: guestUserId || identity.userId,
+      identityKind: "guest",
       avatarUrl: identity.avatarUrl
     });
 
     await Promise.all([
-      roomPersistence.saveRoom(joined.room),
-      profileService.ensureProfile(identity, username, roomId),
-      profileService.touchRecentRoom(identity, roomId, `Room ${roomId}`)
+      roomPersistence.saveRoom(joined.room)
     ]);
 
     response.json({
@@ -134,22 +135,15 @@ router.post("/:roomId/join", optionalAuth, async (request, response) => {
       participant: {
         userId: joined.participant.userId,
         username: joined.participant.username,
-        ...participantResponse(roomId, joined.participant.userId, identity.kind)
+        ...participantResponse(roomId, joined.participant.userId)
       }
     });
-    void analyticsService.record({
-      type: "room_joined",
-      userId: identity.kind === "member" ? identity.userId : undefined,
-      roomId,
-      workspaceId: joined.room.workspace.id,
-      metadata: { language: joined.room.language }
-    });
   } catch (error) {
-    sendError(response, 404, error instanceof Error ? error.message : "Unable to join room");
+    sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Unable to join room");
   }
 });
 
-router.get("/:roomId", optionalAuth, async (request, response) => {
+router.get("/:roomId", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
   if (!roomId) {
     sendError(response, 400, "Valid room ID is required");
@@ -162,24 +156,24 @@ router.get("/:roomId", optionalAuth, async (request, response) => {
       sendError(response, 404, "Room not found");
       return;
     }
-    if (!roomParticipantId(request as AuthenticatedRequest, roomId)) {
+    if (!roomParticipantId(request as GuestRequest, roomId)) {
       sendError(response, 403, "Join this room before loading its workspace.");
       return;
     }
     response.json(roomStore.getRoomSnapshot(roomId));
   } catch (error) {
-    sendError(response, 404, error instanceof Error ? error.message : "Room not found");
+    sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Room not found");
   }
 });
 
-router.get("/:roomId/repository", optionalAuth, async (request, response) => {
+router.get("/:roomId/repository", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
   if (!roomId || !(await loadRoomIfNeeded(roomId))) {
     sendError(response, 404, "Room not found");
     return;
   }
   try {
-    if (!roomParticipantId(request as AuthenticatedRequest, roomId)) {
+    if (!roomParticipantId(request as GuestRequest, roomId)) {
       sendError(response, 403, "Join this room before viewing repository details.");
       return;
     }
@@ -190,14 +184,14 @@ router.get("/:roomId/repository", optionalAuth, async (request, response) => {
   }
 });
 
-router.post("/:roomId/repository/refresh", optionalAuth, async (request, response) => {
+router.post("/:roomId/repository/refresh", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
   if (!roomId || !(await loadRoomIfNeeded(roomId))) {
     sendError(response, 404, "Room not found");
     return;
   }
   try {
-    if (!roomParticipantId(request as AuthenticatedRequest, roomId)) {
+    if (!roomParticipantId(request as GuestRequest, roomId)) {
       sendError(response, 403, "Join this room before refreshing repository details.");
       return;
     }
@@ -209,7 +203,7 @@ router.post("/:roomId/repository/refresh", optionalAuth, async (request, respons
   }
 });
 
-router.get("/:roomId/history", optionalAuth, async (request, response) => {
+router.get("/:roomId/history", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
   if (!roomId) {
     sendError(response, 400, "Valid room ID is required");
@@ -222,17 +216,17 @@ router.get("/:roomId/history", optionalAuth, async (request, response) => {
       sendError(response, 404, "Room not found");
       return;
     }
-    if (!roomParticipantId(request as AuthenticatedRequest, roomId)) {
+    if (!roomParticipantId(request as GuestRequest, roomId)) {
       sendError(response, 403, "Join this room before viewing its history.");
       return;
     }
     response.json(roomStore.getRoomSnapshot(roomId).history);
   } catch (error) {
-    sendError(response, 404, error instanceof Error ? error.message : "Room not found");
+    sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Room not found");
   }
 });
 
-router.post("/:roomId/history/:historyId/restore", optionalAuth, async (request, response) => {
+router.post("/:roomId/history/:historyId/restore", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
 
   if (!roomId) {
@@ -244,7 +238,7 @@ router.post("/:roomId/history/:historyId/restore", optionalAuth, async (request,
       sendError(response, 404, "Room not found");
       return;
     }
-    const userId = roomParticipantId(request as AuthenticatedRequest, roomId);
+    const userId = roomParticipantId(request as GuestRequest, roomId);
     if (!userId) {
       sendError(response, 401, "A valid room session is required");
       return;
@@ -253,11 +247,11 @@ router.post("/:roomId/history/:historyId/restore", optionalAuth, async (request,
     await roomPersistence.saveRoom(restored.room);
     response.json({ ok: true, ...restored });
   } catch (error) {
-    sendError(response, 403, error instanceof Error ? error.message : "Unable to restore room history");
+    sendError(response, roomErrorStatus(error, 403), error instanceof Error ? error.message : "Unable to restore room history");
   }
 });
 
-router.delete("/:roomId", optionalAuth, async (request, response) => {
+router.delete("/:roomId", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
 
   if (!roomId) {
@@ -269,16 +263,24 @@ router.delete("/:roomId", optionalAuth, async (request, response) => {
       sendError(response, 404, "Room not found");
       return;
     }
-    const userId = roomParticipantId(request as AuthenticatedRequest, roomId);
+    const userId = roomParticipantId(request as GuestRequest, roomId);
     if (!userId) {
       sendError(response, 401, "A valid room session is required");
       return;
     }
+    if (roomStore.getRoomSnapshot(roomId).ownerId !== userId) {
+      sendError(response, 403, "Only the owner can delete the room");
+      return;
+    }
+    const persisted = await roomPersistence.deleteRoom(roomId);
+    if (!persisted) {
+      sendError(response, 503, "Room persistence is unavailable. The room was not deleted.");
+      return;
+    }
     roomStore.deleteRoom(roomId, userId);
-    await Promise.all([roomPersistence.deleteRoom(roomId), profileService.removeRoomReferences(roomId)]);
     response.status(204).send();
   } catch (error) {
-    sendError(response, 403, error instanceof Error ? error.message : "Unable to delete room");
+    sendError(response, roomErrorStatus(error, 403), error instanceof Error ? error.message : "Unable to delete room");
   }
 });
 

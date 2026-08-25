@@ -1,6 +1,6 @@
 # Code Collaborator
 
-Code Collaborator is a full-stack realtime collaborative coding application. It uses a Vite/React client, an Express + Socket.IO server, Supabase-backed account and persistence features, and optional AI, GitHub, and LiveKit integrations.
+Code Collaborator is a full-stack realtime collaborative coding application. It uses a Vite/React client, an Express + Socket.IO server, optional Supabase room persistence, and optional AI and LiveKit integrations. Open the app, choose a display name, and collaborate immediately—no account or authentication is part of the current product.
 
 **Live project:** [Open Code Collaborator](https://code-collabrator-client.vercel.app/) | [GitHub repository](https://github.com/hackathonad/Code-Collabrator)
 
@@ -10,9 +10,8 @@ Code Collaborator is a full-stack realtime collaborative coding application. It 
 Browser
   ├─ HTTPS ──────────────> Vercel: Vite/React static frontend
   └─ HTTPS + Socket.IO ──> Persistent Node.js: Express + Socket.IO backend
-                                  ├─ Supabase Auth and database
+                                  ├─ Optional Supabase room persistence
                                   ├─ Optional AI providers
-                                  ├─ Optional GitHub OAuth
                                   └─ Optional LiveKit token service
 ```
 
@@ -22,7 +21,7 @@ Vercel serves the frontend build and rewrites SPA routes to `index.html`. It is 
 
 - Frontend: React, TypeScript, Vite, Tailwind, Monaco Editor
 - Backend: Node.js, Express, TypeScript, Socket.IO
-- Accounts and persistence: Supabase
+- Optional persistence: Supabase database
 - Optional AI: Ollama, Gemini, Groq
 - Optional media: LiveKit
 
@@ -88,7 +87,6 @@ Available test commands are:
 
 ```bash
 npm run test
-npm run test:auth-client
 npm run test:media-client
 npm run test --workspace server
 npm run test:ai --workspace server
@@ -98,31 +96,54 @@ npm run test:media --workspace server
 
 ## Features
 
+- Public guest-first workspace at `/`, `/home`, `/app`, `/room/:roomId`, and `/guest`
+- Signed guest sessions that preserve room identity across refresh and reconnect
 - Create and join rooms with unique IDs
 - Live shared editor state for JavaScript, Python, and C++
 - Remote cursors, participant roles, chat, typing indicators, and workspace files
 - Workspace-aware AI actions for explain, fix, refactor, test, document, review, and summary tasks
-- Optional GitHub connected-account integration
+- Honest run workflow: copy/download source and open a language-matched external runner
 - Optional LiveKit voice, video, screen sharing, and device controls
-- Supabase-backed member accounts, persistence, and private analytics when configured
 
 ## Supabase and optional services
 
-Guest collaboration works without Supabase. Enabling member authentication and server persistence requires separate browser-safe Supabase values for the Vite build and server-only Supabase values for the backend. Never expose `SUPABASE_SERVICE_ROLE_KEY` in the client or a `VITE_*` variable.
+Rooms do not require an account. `/`, `/app`, and `/room/:roomId` accept a display name and use server-signed guest sessions. `/guest` and `/guest/room/:roomId` remain explicit guest aliases. The browser does not initialize Supabase; the server uses an optional service-role client only for room snapshots, participants, and bounded history. Never expose `SUPABASE_SERVICE_ROLE_KEY` in the client or a `VITE_*` variable.
+
+Supabase is optional persistence infrastructure. If it is unavailable, in-memory room collaboration and guest sessions continue to work for the lifetime of the backend process.
+
+### Data and room lifecycle
+
+- The backend `roomStore` is authoritative for live room state, workspace files, bounded chat, bounded history, ownership, and participant membership.
+- Socket.IO presence, cursors, typing indicators, socket bindings, and connection status are realtime/ephemeral. They are cleared on disconnect and are never restored as online from persistence.
+- Quick Rejoin, signed guest sessions, cached room snapshots, themes, and AI settings/conversations are browser-local. Corrupt localStorage entries are ignored and cleaned rather than treated as valid rooms.
+- When Supabase is configured, room snapshots, workspace content, chat, bounded history, and membership metadata are persisted with debounced, ordered writes. Supabase errors do not expose credentials or raw provider details to the browser.
+- Room deletion is owner-authorized and invalidates the room before active clients are told to leave. Deleted rooms are removed from Quick Rejoin and subsequent room reads/joins return `404`.
+- A reconnect validates the signed guest session, rejoins the room, and receives the latest authoritative snapshot. Older snapshots and duplicate chat/history events cannot replace newer client state.
+
+If Supabase is unavailable or not configured, the same guest-first collaboration fallback remains available in backend memory. That fallback is not permanent storage; rooms are lost when the backend process is replaced or restarted.
 
 Apply the SQL files in `supabase/migrations/` in lexical order. The exact migration list, redirect requirements, and full environment reference are documented in [deployment architecture](docs/DEPLOYMENT.md) and [environment reference](docs/ENVIRONMENT.md).
 
-Ollama runs on the backend machine or network, not in the browser. Gemini, Groq, GitHub, and LiveKit remain optional; leaving an integration unconfigured does not disable rooms, editing, or chat.
+Ollama runs on the backend machine or network, not in the browser. Gemini, Groq, and LiveKit remain optional; leaving an integration unconfigured does not disable rooms, editing, or chat.
 
-## Optional integrations and analytics
+## Optional integrations
 
 AI provider credentials remain server-only and are never sent over Socket.IO or returned by provider-status responses. If Ollama is not installed, cannot be reached, or has no models, the collaboration workspace remains available and the AI panel reports the provider state. Gemini and Groq are enabled only when their server credentials are configured.
 
-GitHub is a connected-account integration, not an application sign-in method. Its backend callback is `/api/github/callback`; GitHub access tokens are encrypted before server-side persistence and are never sent to the browser, room metadata, or generic profile endpoint.
+For local Ollama development, start Ollama on the same machine as the backend, then pull at least one model (the verified example is `qwen3.5:latest`):
+
+```bash
+ollama serve
+ollama pull qwen3.5:latest
+```
+
+The server discovers installed models from `OLLAMA_BASE_URL` and exposes only non-secret provider/model status through `GET /api/ai/providers`. Leave `OLLAMA_MODEL` blank to use the first discovered model, or set it to a discovered model name. The AI panel's Refresh control re-reads the cached model catalog. Ollama is not contacted directly by the browser and a local Ollama URL must not be used as a production Vercel variable. The currently implemented cloud adapters are Gemini and Groq; configure their server variables only when those providers are actually needed.
 
 LiveKit is optional. Calls use short-lived backend-issued room tokens that are bound to the current participant. Camera, microphone, and screen capture require direct browser user actions. Production media requires HTTPS and a secure `wss:` LiveKit endpoint.
 
-The private analytics dashboard requests `GET /api/analytics/me?range=7d|30d|90d|all`. The server records only allow-listed activity metadata for authenticated members, not source code, files, chat, AI prompts or responses, credentials, or media. Raw `analytics_events` retention is an external server-side operational task; it must never be applied to rooms, workspaces, project data, chat, or AI conversation history.
+## Code execution workflow
+
+The current application does not execute user code inside the browser or backend. `Run` copies the active file and opens the configured Programiz runner for JavaScript, Python, or C++; the browser cannot read that external site's stdout, stderr, timing, or exit code. The workspace therefore never fabricates a success result. Use `Copy code` or `Download file` when you want a portable source artifact, and run it in the opened runner. Downloaded files preserve a compatible existing extension or use `.js`, `.py`, or `.cpp` for the selected language. Reset restores the single authoritative language starter template and asks the owner before changing shared code through the existing room flow.
 
 ## Documentation
 
@@ -137,4 +158,4 @@ The private analytics dashboard requests `GET /api/analytics/me?range=7d|30d|90d
 - The backend stores live room state in memory between persisted snapshots. Run one realtime backend instance unless a future Socket.IO adapter and shared-state design are added.
 - `/health` reports that the backend process is alive. `/ready` reports safe feature availability without returning secret values.
 - Guest-session signatures are tied to `GUEST_SESSION_SECRET`; changing that server secret invalidates existing guest sessions.
-- The analytics feature records only allow-listed product metadata for authenticated members. It excludes source code, file contents, chat, credentials, AI prompts/responses, and media data.
+- Room authorization remains server-side even though identity is guest-first: signed room tokens, membership checks, socket binding, owner checks, rate limits, and payload validation are still enforced.

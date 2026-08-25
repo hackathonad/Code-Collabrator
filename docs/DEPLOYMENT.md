@@ -1,48 +1,35 @@
 # Deployment architecture
 
-Code Collaborator has a static frontend and a persistent realtime backend.
+Code Collaborator has a static Vercel frontend and a persistent Render/Node backend.
 
 ```text
 Browser
   ├── HTTPS ───────────────> Vercel: Vite/React frontend
-  └── HTTPS + Socket.IO ───> Persistent Node.js: Express + Socket.IO backend
-                                     ├── Supabase
-                                     ├── Optional AI and GitHub services
-                                     └── Optional LiveKit token service
+  └── HTTPS + Socket.IO ───> Render: Express + Socket.IO backend
+                                  ├── Optional Supabase room persistence
+                                  ├── Optional AI providers
+                                  └── Optional LiveKit token service
 ```
 
-Vercel hosts the frontend build and SPA rewrite only. It must not be the Socket.IO backend: collaboration needs a long-running process, WebSocket upgrades, and in-memory room runtime. The current server has no Socket.IO adapter or shared realtime-state layer, so start with one persistent backend instance.
+Authentication is not part of the product. A visitor chooses a display name, receives a server-signed room guest token, and can create or join a room immediately. The server remains authoritative for membership, socket binding, owner actions, and persistence.
 
 ## Frontend deployment: Vercel
 
-Use `client/` as the Vercel project **Root Directory**. The committed [`client/vercel.json`](../client/vercel.json) specifies the SPA rewrite and these Vite settings:
+Use the repository root (`.`) as the Vercel project root. The committed [`vercel.json`](../vercel.json) selects the Vite/React frontend, runs `npm run build --workspace client`, publishes `client/dist`, and rewrites SPA routes to `index.html`. If the Vercel project is intentionally configured with `client/` as its root, use the equivalent `client/vercel.json` settings (`npm run build`, output `dist`) instead; do not combine the two root-directory layouts.
 
-| Setting | Value |
+Set these browser-safe build variables:
+
+| Variable | Value |
 | --- | --- |
-| Framework | Vite / React |
-| Build command | `npm run build` |
-| Output directory | `dist` |
-| SPA rewrite | `/(.*)` → `/index.html` |
+| `VITE_API_URL` | `https://code-collaborator-backend.onrender.com` |
+| `VITE_SOCKET_URL` | `https://code-collaborator-backend.onrender.com` |
+| `VITE_PUBLIC_SITE_URL` | `https://code-collabrator-client.vercel.app` (optional, but recommended for canonical metadata) |
 
-The repository-root [`vercel.json`](../vercel.json) also targets `client/package.json` for repository-root static builds. Neither Vercel configuration deploys the Node/Socket.IO backend.
+Do not set Supabase variables in Vercel. The browser does not initialize Supabase and must never receive `SUPABASE_SERVICE_ROLE_KEY`.
 
-Configure these Vercel **build-time** browser variables:
+## Backend deployment: Render
 
-| Variable | When to set it | Browser-safe? |
-| --- | --- | --- |
-| `VITE_API_URL` | Required for production | Yes — public HTTPS backend origin |
-| `VITE_SOCKET_URL` | Required for production | Yes — public HTTPS backend origin |
-| `VITE_PUBLIC_SITE_URL` | Optional, recommended for canonical/Open Graph URLs | Yes |
-| `VITE_SUPABASE_URL` | When browser Supabase authentication is enabled | Yes |
-| `VITE_SUPABASE_ANON_KEY` | When browser Supabase authentication is enabled | Yes — anon/publishable key only |
-
-Do not place backend secrets or any `SUPABASE_SERVICE_ROLE_KEY` value in Vercel frontend variables. The legacy `NEXT_PUBLIC_SUPABASE_*` names are supported for compatibility, but new deployments should use the `VITE_` names in the table.
-
-## Backend deployment
-
-Deploy the existing Node backend as a persistent Web Service, not a static site or a serverless function. The repository root (`.`) is the backend deployment root for the existing Dockerfile and npm-workspace commands; the backend source itself is in `server/`.
-
-From the repository root, the production npm commands are:
+Deploy the repository as a persistent Web Service using the existing `Dockerfile`. The Render root directory is the repository root (`.`). The container starts `node server/dist/index.js`; an equivalent non-Docker service uses the repository-root commands below. The service must support HTTPS, WebSocket upgrades, and Render's host-provided `PORT` (the server listens on that port and does not require a fixed public port).
 
 ```bash
 npm ci
@@ -50,111 +37,68 @@ npm run build --workspace server
 npm run start --workspace server
 ```
 
-The existing [`Dockerfile`](../Dockerfile) performs the server build using Node 22 and starts `node server/dist/index.js`. It does not build or serve the Vite client.
+Required production variables:
 
-### Backend environment and port behavior
+- `NODE_ENV=production`
+- `CLIENT_URL=https://code-collabrator-client.vercel.app`
+- `GUEST_SESSION_SECRET` with a unique value of at least 32 characters
 
-Set `NODE_ENV=production`, `CLIENT_URL`, and `GUEST_SESSION_SECRET` before starting a production backend. The server refuses to start in production if the frontend-origin or guest-secret validation fails. Add only the optional integration variables that you use; see the complete [environment reference](ENVIRONMENT.md).
+Optional persistence variables:
 
-`PORT` is parsed as a positive valid port and defaults to `4000` when absent or invalid. The server calls `httpServer.listen(env.port)` and has no `HOST` environment variable or explicit host setting. Use a Web Service host that routes public traffic to its supplied `PORT`; do not add a host-binding variable that this repository does not read.
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
-Set `CLIENT_URL` to the exact public frontend origin. It can contain a comma-separated list of origins. In production every origin must use HTTPS. The same allow-list is used by Express CORS and Socket.IO; credentials are disabled. Add a Vercel preview origin only when that preview is intentionally allowed to use the backend.
+Optional AI and media variables are documented in [ENVIRONMENT.md](ENVIRONMENT.md). All provider credentials remain server-only.
 
-The backend exposes these unauthenticated operational endpoints:
+### AI on the persistent backend
 
-| Endpoint | Meaning |
-| --- | --- |
-| `GET /health` | The backend process is alive. |
-| `GET /ready` | Safe persistence and feature-availability status; it does not return secret values. |
+AI requests run through the Express backend so provider credentials never reach the browser. The current adapters are Ollama, Gemini, and Groq. For a local Ollama backend, run `ollama serve`, pull an installed model (for example `ollama pull qwen3.5:latest`), and use `OLLAMA_BASE_URL`/`OLLAMA_MODEL` on the server. In production, the backend must be able to reach the configured Ollama URL; do not put a localhost Ollama URL in Vercel. `GET /api/ai/providers` returns safe availability and discovered model metadata only. A missing or unhealthy provider does not block the rest of the workspace.
 
-The Socket.IO server accepts `websocket` and `polling` transports. The backend host must support HTTPS, WebSocket upgrades, and persistent connections. Point both frontend backend URLs at the same public HTTPS origin unless the services are intentionally separated.
+## Supabase room persistence
 
-## Render backend deployment
+Supabase is database-only; it is not an authentication requirement and the browser does not create a Supabase client. For the current guest-first room persistence path, apply these migrations in lexical order:
 
-Deploy the backend on Render as a **Web Service**. Do not choose a Static Site.
+1. `supabase/migrations/202608030001_auth_persistence.sql` — creates `rooms`, `room_members`, and `room_history`.
+2. `supabase/migrations/202608050001_workspace.sql` — adds the durable workspace snapshot column used by the server.
 
-| Render setting | Repository-derived value |
-| --- | --- |
-| Root directory | `.` (repository root) |
-| Runtime | Docker, using the existing `Dockerfile` |
-| Dockerfile | `Dockerfile` |
-| Custom build command | None; the Dockerfile runs `npm ci` and `npm run build --workspace server` |
-| Custom start command | None; the Dockerfile starts `node server/dist/index.js` |
-| Required service type | Persistent Web Service with public HTTPS and WebSocket support |
+The later analytics and GitHub/account migrations are not required for guest room collaboration. Apply them only when those separately implemented server features are enabled. The active room persistence layer stores room/workspace snapshots, code, chat, bounded history, and membership metadata. It deliberately does not persist socket IDs, online/presence state, cursors, or typing state. Writes are debounced for editor changes and serialized by room/version so an older snapshot cannot overwrite a newer one. The service-role client remains server-only.
 
-Set the backend environment variables in Render, beginning with `NODE_ENV`, `CLIENT_URL`, and `GUEST_SESSION_SECRET`. Let Render provide `PORT` when it does; the server respects it. If `PORT` is not provided, the code falls back to `4000`.
+Persistence failures are caught and logged with safe diagnostic messages. In-memory rooms and guest collaboration continue when persistence is unavailable; `/ready` reports configuration availability, not a guarantee that a remote write will succeed. Restarting the backend then loses rooms that were not persisted. Deletion first invalidates the persisted room when Supabase is configured, then removes the authoritative in-memory room and notifies connected clients; failed persistence leaves the room intact and returns a controlled `503` response.
 
-After Render supplies the backend's public HTTPS origin, check:
+Room lifecycle and reconnect behavior:
 
-```text
-https://your-backend-origin/health
-https://your-backend-origin/ready
-```
+- Create/join validates the room ID, display name, signed guest session, and supported language.
+- The server owns room membership and ownership. Guest sessions are HMAC-signed with `GUEST_SESSION_SECRET`; no account is needed.
+- Socket reconnect validates the same guest token, replaces only the participant's stale socket binding, and sends the latest room snapshot. A prior socket cannot mark a newer socket offline.
+- Chat and history are bounded and deduplicated by stable IDs. Presence and typing are cleared on disconnect and rebuilt after reconnect.
+- Quick Rejoin remains browser-local (maximum five validated, newest-first rooms); deleted or nonexistent rooms are removed during its health check.
 
-Then configure the Vercel build variables and redeploy the frontend.
+## Execution and source export
 
-## Vercel → backend connection
+There is no server-side code execution service in the current architecture. The Run workflow copies the active source file and opens the configured Programiz page for the selected JavaScript, Python, or C++ language. Cross-origin browser security prevents Code Collaborator from reading that page's output, so the panel reports only that the external runner opened (or that copying/pop-up access failed); it never displays fabricated stdout, stderr, exit codes, or success. Copy Code uses the browser Clipboard API with a visible failure state, and Download File creates the exact active source with a language-appropriate extension. If a runner is unavailable, use Download File and run the source manually. Reset Code restores the same `LANGUAGE_CONFIG` starter used when a room or language is initialized, and owner confirmation protects shared edits.
 
-After the persistent backend has a public HTTPS origin, configure exactly:
+Execution status can be included in the existing AI request context when a runner or clipboard error is known. It does not claim output that the browser cannot observe; choose the AI Error/Fix action after opening the AI panel to inspect the current file together with that bounded status message.
 
-```text
-VITE_API_URL = backend public HTTPS origin
-VITE_SOCKET_URL = backend public HTTPS origin
-```
+## Production verification
 
-Do not use a Vercel frontend URL for either variable. A Vercel frontend contains static files and cannot provide the Express API or durable Socket.IO connection required by rooms.
+1. Check `GET /health` and `GET /ready`.
+2. Open the Vercel frontend without signing in.
+3. Create a room, refresh it, and rejoin from Quick Rejoin.
+4. Join from a second browser and verify editor, chat, presence, typing, and cursors.
+5. Confirm a non-owner cannot delete or manage the room.
+6. Delete as the owner and confirm all clients leave, Quick Rejoin removes the room, and GET/JOIN return 404.
 
-## Supabase
-
-Apply these migrations in lexical order through the Supabase SQL editor or migration workflow:
-
-1. `202608030001_auth_persistence.sql`
-2. `202608050001_workspace.sql`
-3. `202608180001_phase7_accounts_github.sql`
-4. `202608180002_analytics.sql`
-
-The migrations create account/persistence data, workspace snapshots, server-managed GitHub connection storage, and private analytics metadata. They enable row-level security; browser roles are revoked from the sensitive GitHub-connections and analytics tables.
-
-In Supabase Auth, configure the frontend Site URL and allowed redirects for each deployed frontend. The client uses the frontend origin for Google OAuth and `/auth/callback` for password recovery. Include the local URLs used by this project as applicable:
-
-```text
-http://127.0.0.1:5173
-http://127.0.0.1:5173/auth/callback
-```
-
-Also add the deployed frontend origin and its `/auth/callback` route. Preview deployments need matching allowed frontend redirects when authentication is tested there.
-
-`VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are browser-visible build values. `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are separate backend values. Never expose `SUPABASE_SERVICE_ROLE_KEY` in Vercel, Vite, browser bundles, or client-side files.
-
-## Optional integrations
-
-- **Ollama:** The backend must be able to reach `OLLAMA_BASE_URL`. A Vercel browser cannot reach a developer laptop's local Ollama service.
-- **Gemini and Groq:** Their API keys are server-only. Omit them to keep the provider unavailable without affecting rooms.
-- **GitHub:** All four GitHub variables must be configured together. Set `GITHUB_REDIRECT_URI` to the backend callback ending in `/api/github/callback`.
-- **LiveKit:** `LIVEKIT_URL`, `LIVEKIT_API_KEY`, and `LIVEKIT_API_SECRET` must be configured together. Use a secure `wss:` endpoint for production media.
-
-## Production checklist
-
-1. Push the reviewed repository changes to GitHub.
-2. Apply the four Supabase migrations in order and configure Supabase Auth Site URL/redirects.
-3. Deploy one persistent backend Web Service.
-4. Set the required backend variables: `NODE_ENV`, `CLIENT_URL`, and `GUEST_SESSION_SECRET`.
-5. Test `GET /health` and `GET /ready` on the backend public HTTPS origin.
-6. Create or update the Vercel frontend project using root directory `client/`.
-7. Set `VITE_API_URL` and `VITE_SOCKET_URL`; set browser Supabase values only when authentication is enabled.
-8. Redeploy the Vercel frontend after changing build-time variables.
-9. Test sign-up, login, logout, callback handling, and a guest room where Supabase is configured.
-10. Test room creation, a second participant, editor/chat synchronization, and a Socket.IO connection.
-11. Smoke-test AI, GitHub, and LiveKit only when their complete optional configurations are present.
+After any source or Vercel-variable change, trigger a new **Production** deployment. A previously deployed Vercel build does not change when environment variables are edited. The landing page must be guest-first (display-name field and Create/Join Room controls); a deployed page showing Sign in/Sign up is an obsolete build and must be rebuilt from the current repository.
 
 ## Troubleshooting
 
 | Symptom | Checks |
 | --- | --- |
-| **Failed to fetch** | Verify `VITE_API_URL` is the public backend HTTPS origin, the backend responds at `/health`, and the Vercel frontend was redeployed after the value changed. |
-| **Backend unavailable** | Check the Web Service logs, `NODE_ENV=production`, required backend variables, the host-provided `PORT`, and `/health`. Production validation prevents startup when `CLIENT_URL` or `GUEST_SESSION_SECRET` is invalid. |
-| **Socket.IO connection failure** | Verify `VITE_SOCKET_URL` targets the backend origin, the host supports WebSocket upgrades and persistent connections, and `CLIENT_URL` exactly includes the frontend origin. The server supports `websocket` and `polling`. |
-| **CORS errors** | Set `CLIENT_URL` to the exact frontend origin, without an unexpected path. Use comma-separated origins only for intentionally permitted sites; production origins must be HTTPS. Redeploy/restart the backend after changing it. |
-| **Supabase authentication redirect error** | Add both the frontend origin and its `/auth/callback` path to Supabase Auth redirects. Confirm the Vite Supabase URL and anon key are configured together, and do not use server credentials in the browser. |
-| **Vercel SPA route returns 404** | Confirm the Vercel project uses `client/` and the committed `client/vercel.json`; its rewrite sends all routes to `index.html`. Redeploy after correcting the project root or build output. |
-| **Render build or startup error** | Use a Render Web Service with root directory `.` and the existing `Dockerfile`. Do not override the Docker build/start commands. Check that the service is using the repository Docker context, receives `PORT`, and has the required backend environment variables. |
+| Failed to fetch | Confirm `VITE_API_URL` is the backend origin and `/health` responds. |
+| Socket.IO failure | Confirm `VITE_SOCKET_URL`, WebSocket support, and exact `CLIENT_URL`. |
+| CORS error | Set `CLIENT_URL` to the exact frontend origin; production origins must use HTTPS. |
+| Room session invalid | Rejoin from the landing page; changing `GUEST_SESSION_SECRET` invalidates prior guest tokens. |
+| Persistence unavailable | Check server logs and both Supabase variables. Guest rooms still work in memory. |
+| Vercel SPA 404 | Confirm the Vercel project uses the committed SPA rewrite and the correct client output directory. |
+| Stale Vercel UI | Confirm the project root is `.` (or consistently `client/`), redeploy Production from the current commit, and verify the generated asset no longer contains obsolete auth routes. |
+| Render startup failure | Check the Docker build/start logs, keep `NODE_ENV=production`, provide a valid guest-session secret, and allow Render to supply `PORT`. |

@@ -21,7 +21,11 @@ export const EditorToolbar = ({ language, canEdit, isPaused, editorTypingUsers, 
 
   useEffect(() => { if (!typingUsers.length) setOpen(false); }, [typingUsers.length]);
 
-  const typingLabel = typingUsers.length === 1 ? "1 person typing" : String(typingUsers.length) + " people typing";
+  const typingLabel = typingUsers.length === 0
+    ? "NOBODY IS TYPING"
+    : typingUsers.length === 1
+    ? "1 person typing…"
+    : `${typingUsers.length} people typing…`;
   const statusMessage = isPaused ? "Paused" : canEdit ? "Ready" : "View only";
 
   return (
@@ -46,7 +50,7 @@ export const EditorToolbar = ({ language, canEdit, isPaused, editorTypingUsers, 
               <span className="min-w-0 flex-1 truncate">{username}</span><LoaderCircle className="h-3.5 w-3.5 animate-spin text-emerald-400" />
             </div>)}</div>
           </div> : null}
-        </> : null}
+        </> : <span className="text-[10px] font-semibold tracking-[0.12em] text-[var(--text-faint)]">{typingLabel}</span>}
       </div>
     </div>
   );

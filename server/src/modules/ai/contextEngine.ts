@@ -47,9 +47,9 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   const currentRaw = workspace.files[input.currentFileId ?? workspace.activeFileId] ?? workspace.files[workspace.activeFileId] ?? null;
   const currentFile = currentRaw && !isSensitive(workspace, currentRaw) ? { id: currentRaw.id, name: currentRaw.name, language: currentRaw.language, content: "" } : null;
   if (currentRaw && !currentFile) excludedSections.push(`sensitive current file: ${currentRaw.name}`);
-  const selectionAllowed = Boolean(input.selectedCode?.trim()) && Boolean(currentFile);
+  const selectionAllowed = Boolean(input.selectedCode?.trim()) && Boolean(currentFile) && (!input.selectedCodeFileId || input.selectedCodeFileId === currentFile?.id);
   const selectedCode = selectionAllowed ? include("selected code", input.selectedCode!.trim(), input.settings.workspaceContextSize === "extended" ? 10_000 : 6_000) || undefined : undefined;
-  if (input.selectedCode?.trim() && !selectionAllowed) excludedSections.push("selected code from sensitive file");
+  if (input.selectedCode?.trim() && !selectionAllowed) excludedSections.push(input.selectedCodeFileId && input.selectedCodeFileId !== currentFile?.id ? "selected code from a different file" : "selected code from sensitive file");
   if (currentFile && currentRaw) currentFile.content = include(`current file: ${currentFile.name}`, currentRaw.content, input.settings.workspaceContextSize === "minimal" ? 3_000 : input.settings.workspaceContextSize === "extended" ? 14_000 : 7_000);
   const execution = input.execution?.output ? { output: include("execution output", input.execution.output, 5_000), failed: input.execution.failed } : undefined;
   const openFiles = relevantOpenFiles(workspace, input, currentFile?.id ?? "").slice(0, input.settings.workspaceContextSize === "extended" ? 4 : 2).flatMap((file) => {

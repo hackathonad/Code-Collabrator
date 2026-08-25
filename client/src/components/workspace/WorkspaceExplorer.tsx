@@ -134,6 +134,5 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
       <div className="mt-2 grid gap-1">{onOpenMessages ? <button type="button" onClick={onOpenMessages} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><MessageSquare className="h-3.5 w-3.5 text-[var(--accent)]" />Messages</button> : null}{onOpenActivity ? <button type="button" onClick={onOpenActivity} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><Users className="h-3.5 w-3.5 text-[var(--accent)]" />Participants & activity</button> : null}</div>
       <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--badge-bg)] px-2 py-1.5"><span className="truncate font-mono text-[10px] text-[var(--text-muted)]">Room ID: {roomId}</span><button type="button" onClick={() => void copyRoomId()} className="rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]" title="Copy room ID"><Copy className="h-3.5 w-3.5" /></button></div>
     </div>
-    <SourceControlPanel repository={repository} loading={gitLoading} error={gitError} />
   </div>;
 };

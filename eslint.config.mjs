@@ -25,7 +25,10 @@ export default tseslint.config(
       "react-hooks/set-state-in-effect": "off",
       "react-hooks/purity": "off",
       "react-hooks/preserve-manual-memoization": "off",
-      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      // Context providers intentionally export their hooks and stable theme
+      // constants. They are not component-only modules, but this does not
+      // affect production rendering or route behavior.
+      "react-refresh/only-export-components": ["warn", { allowConstantExport: true, allowExportNames: ["useTheme", "THEME_ORDER", "THEME_LABELS"] }],
       "@typescript-eslint/no-explicit-any": "off"
     }
   }

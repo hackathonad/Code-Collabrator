@@ -30,14 +30,12 @@ interface ParticipantOptions {
 }
 
 const createRoomId = () => {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (;;) {
     const roomId = randomBytes(4).toString("hex");
     if (!rooms.has(roomId)) {
       return roomId;
     }
   }
-
-  return randomBytes(8).toString("hex").slice(0, 8);
 };
 
 const createUserId = () => randomUUID();
@@ -107,12 +105,12 @@ const ensureRoom = (roomId: string) => {
 };
 
 const canEditCode = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
-const canManageContent = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member";
+const canManageContent = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
 
 const transferOwnershipIfNeeded = (room: RoomState) => {
   for (const participant of Object.values(room.participants)) {
     if (participant.userId !== room.ownerId && participant.role === "owner") {
-      participant.role = participant.identityKind === "guest" ? "guest" : "member";
+      participant.role = "member";
     }
   }
 
@@ -122,13 +120,6 @@ const transferOwnershipIfNeeded = (room: RoomState) => {
     return;
   }
 
-  const nextOwner = sortParticipants(room.participants).find((participant) => participant.isOnline && participant.identityKind === "member");
-  if (!nextOwner) {
-    return;
-  }
-
-  room.ownerId = nextOwner.userId;
-  nextOwner.role = "owner";
 };
 
 const touchParticipantActivity = (participant: Participant, room: RoomState) => {
@@ -393,7 +384,7 @@ export const roomStore = {
     return serializeParticipant(participant);
   },
 
-  addChatMessage(roomId: string, userId: string, message: string) {
+  addChatMessage(roomId: string, userId: string, message: string, messageId?: string) {
     const room = ensureRoom(roomId);
     const participant = room.participants[userId];
     if (!participant) {
@@ -403,8 +394,13 @@ export const roomStore = {
       throw new Error("Message cannot be empty");
     }
 
+    if (messageId) {
+      const existingMessage = room.chat.find((entry) => entry.id === messageId);
+      if (existingMessage) return existingMessage;
+    }
+
     const chatMessage: ChatMessage = {
-      id: randomUUID(),
+      id: messageId ?? randomUUID(),
       userId,
       username: participant.username,
       message,

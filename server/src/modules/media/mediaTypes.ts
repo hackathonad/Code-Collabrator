@@ -10,7 +10,7 @@ export interface MediaProviderStatus {
 
 export interface MediaTokenRequest {
   roomId: string;
-  participant: { userId: string; username: string; role: RoomRole; identityKind: "guest" | "member" };
+  participant: { userId: string; username: string; role: RoomRole; identityKind: "guest" };
 }
 
 export interface MediaTokenSession {

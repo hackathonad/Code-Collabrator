@@ -6,10 +6,26 @@ const THEME_ID_KEY = "code-sphere-theme-id";
 const LEGACY_THEME_KEY = "code-sphere-theme";
 const ROOM_CACHE_KEY = "code-sphere-room-cache";
 
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
+
+const isStoredSession = (value: unknown): value is UserSession => {
+  if (!isRecord(value)) return false;
+  return typeof value.roomId === "string" && /^[a-f0-9]{8}$/i.test(value.roomId)
+    && typeof value.userId === "string" && typeof value.username === "string" && value.identityKind === "guest";
+};
+
+const isRecentRoom = (value: unknown): value is RecentRoom => {
+  if (!isRecord(value)) return false;
+  return typeof value.roomId === "string" && /^[a-f0-9]{8}$/i.test(value.roomId)
+    && typeof value.label === "string" && typeof value.username === "string" && Number.isFinite(value.lastVisitedAt);
+};
+
 const readSessions = () => {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, UserSession>) : {};
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!isRecord(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, value]) => isStoredSession(value))) as Record<string, UserSession>;
   } catch {
     return {};
   }
@@ -18,7 +34,8 @@ const readSessions = () => {
 const readRecentRooms = () => {
   try {
     const raw = window.localStorage.getItem(RECENT_ROOMS_KEY);
-    return raw ? (JSON.parse(raw) as RecentRoom[]) : [];
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter(isRecentRoom) : [];
   } catch {
     return [];
   }
@@ -27,22 +44,23 @@ const readRecentRooms = () => {
 const readRoomCache = () => {
   try {
     const raw = window.localStorage.getItem(ROOM_CACHE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, RoomSnapshot>) : {};
+    const parsed = raw ? JSON.parse(raw) : {};
+    return isRecord(parsed) ? parsed as Record<string, RoomSnapshot> : {};
   } catch {
     return {};
   }
 };
 
-const isWorkspaceSnapshot = (snapshot: RoomSnapshot | null): snapshot is RoomSnapshot => Boolean(
-  snapshot && snapshot.workspace && snapshot.workspace.files && snapshot.workspace.folders && snapshot.workspace.activeFileId
+const isWorkspaceSnapshot = (snapshot: unknown): snapshot is RoomSnapshot => Boolean(
+  isRecord(snapshot) && isRecord(snapshot.workspace) && isRecord(snapshot.workspace.files) && isRecord(snapshot.workspace.folders) && typeof snapshot.workspace.activeFileId === "string"
 );
 
 const writeRecentRooms = (rooms: RecentRoom[]) => {
-  window.localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(rooms));
+  try { window.localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(rooms)); } catch { /* Storage can be disabled or full. */ }
 };
 
 const writeRoomCache = (rooms: Record<string, RoomSnapshot>) => {
-  window.localStorage.setItem(ROOM_CACHE_KEY, JSON.stringify(rooms));
+  try { window.localStorage.setItem(ROOM_CACHE_KEY, JSON.stringify(rooms)); } catch { /* Storage can be disabled or full. */ }
 };
 
 export type StoredThemeId = "mono" | "blue" | "green" | "shades";
@@ -67,7 +85,7 @@ export const storage = {
   },
 
   saveThemeId(themeId: StoredThemeId) {
-    window.localStorage.setItem(THEME_ID_KEY, themeId);
+    try { window.localStorage.setItem(THEME_ID_KEY, themeId); } catch { /* Storage is optional. */ }
   },
 
   getSession(roomId: string) {
@@ -75,12 +93,8 @@ export const storage = {
   },
 
   saveSession(session: UserSession) {
-    const nextSessions = {
-      ...readSessions(),
-      [session.roomId]: session
-    };
-
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSessions));
+    const nextSessions = { ...readSessions(), [session.roomId]: session };
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSessions)); } catch { /* Storage is optional. */ }
     storage.saveRecentRoom({
       roomId: session.roomId,
       label: `Room ${session.roomId}`,
@@ -92,13 +106,13 @@ export const storage = {
   removeSession(roomId: string) {
     const nextSessions = readSessions();
     delete nextSessions[roomId];
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSessions));
+    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextSessions)); } catch { /* Storage is optional. */ }
   },
 
   getRecentRooms() {
     const uniqueRooms = new Map<string, RecentRoom>();
     for (const room of readRecentRooms()) {
-      if (!/^[a-f0-9]{8}$/i.test(room.roomId) || !room.username.trim() || !Number.isFinite(room.lastVisitedAt)) continue;
+      if (!room.username.trim()) continue;
       const existing = uniqueRooms.get(room.roomId);
       if (!existing || room.lastVisitedAt > existing.lastVisitedAt) uniqueRooms.set(room.roomId, room);
     }
@@ -124,9 +138,18 @@ export const storage = {
   },
 
   saveRoomSnapshot(room: RoomSnapshot) {
+    const cachedRoom: RoomSnapshot = {
+      ...room,
+      participants: room.participants.map((participant) => ({
+        ...participant,
+        isOnline: false,
+        status: "offline" as const,
+        cursor: { lineNumber: 1, column: 1 }
+      }))
+    };
     const nextRooms = {
       ...readRoomCache(),
-      [room.roomId]: room
+      [room.roomId]: cachedRoom
     };
 
     writeRoomCache(nextRooms);

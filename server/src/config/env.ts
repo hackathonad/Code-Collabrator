@@ -5,6 +5,7 @@ dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
 const DEVELOPMENT_GUEST_SECRET = "code-sphere-dev-guest-secret";
 const LOCAL_CLIENT_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:5173"];
+const DEPLOYED_CLIENT_ORIGINS = ["https://code-collabrator-client.vercel.app"];
 
 type EnvironmentSource = NodeJS.ProcessEnv;
 
@@ -57,10 +58,6 @@ export interface ServerEnvironment {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   guestSessionSecret: string;
-  githubClientId: string;
-  githubClientSecret: string;
-  githubRedirectUri: string;
-  githubTokenEncryptionKey: string;
 }
 
 export interface ParsedEnvironment {
@@ -78,7 +75,7 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     isProduction,
     port: toNumber(source.PORT, 4000),
     clientUrl: configuredClientUrl,
-    clientOrigins: parseOrigins(source.CLIENT_URL, isProduction ? [] : LOCAL_CLIENT_ORIGINS),
+    clientOrigins: parseOrigins(source.CLIENT_URL, isProduction ? DEPLOYED_CLIENT_ORIGINS : LOCAL_CLIENT_ORIGINS),
     ollamaBaseUrl: toHttpUrl(source.OLLAMA_BASE_URL, "http://127.0.0.1:11434"),
     ollamaModel: source.OLLAMA_MODEL?.trim() ?? "",
     geminiApiKey: source.GEMINI_API_KEY?.trim() ?? "",
@@ -93,10 +90,6 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     supabaseUrl: toHttpUrl(source.SUPABASE_URL),
     supabaseServiceRoleKey: source.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "",
     guestSessionSecret: source.GUEST_SESSION_SECRET?.trim() || (isProduction ? "" : DEVELOPMENT_GUEST_SECRET),
-    githubClientId: source.GITHUB_CLIENT_ID?.trim() ?? "",
-    githubClientSecret: source.GITHUB_CLIENT_SECRET?.trim() ?? "",
-    githubRedirectUri: toHttpUrl(source.GITHUB_REDIRECT_URI),
-    githubTokenEncryptionKey: source.GITHUB_TOKEN_ENCRYPTION_KEY?.trim() ?? ""
   };
 
   const issues: string[] = [];
@@ -109,8 +102,6 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
   if (config.livekitApiKey || config.livekitApiSecret || config.livekitUrl) {
     if (!(config.livekitApiKey && config.livekitApiSecret && config.livekitUrl)) issues.push("LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must be configured together.");
   }
-  const githubValues = [config.githubClientId, config.githubClientSecret, config.githubRedirectUri, config.githubTokenEncryptionKey];
-  if (githubValues.some(Boolean) && !githubValues.every(Boolean)) issues.push("GitHub OAuth variables must be configured together.");
   return { config, issues };
 };
 
@@ -133,7 +124,6 @@ export const isAllowedClientOrigin = (origin: string | undefined) => {
 
 export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
-  github: Boolean(env.githubClientId && env.githubClientSecret && env.githubRedirectUri && env.githubTokenEncryptionKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
   ai: { ollama: Boolean(env.ollamaBaseUrl), gemini: Boolean(env.geminiApiKey), groq: Boolean(env.groqApiKey) }
 });

@@ -14,10 +14,10 @@
     "build": "npm run build --workspace server && npm run build --workspace client",
     "start": "npm run start --workspace server",
     "lint": "eslint client/src server/src",
-    "test": "npm run test --workspace server && npm run test:auth-client && npm run test:media-client",
+    "test": "npm run test --workspace server && npm run test:client",
     "verify": "npm run build && npm run lint && npm test",
-    "test:media-client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts",
-    "test:auth-client": "npm exec --workspace server tsx -- --test ../client/test/authFoundation.test.ts"
+    "test:client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts ../client/test/executionFoundation.test.ts ../client/test/persistenceFoundation.test.ts",
+    "test:media-client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

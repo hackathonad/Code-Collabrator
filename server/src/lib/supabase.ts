@@ -16,16 +16,3 @@ export const supabaseAdmin =
 
 export const supabase = supabaseAdmin;
 export const isSupabaseConfigured = Boolean(supabaseAdmin);
-
-export const verifySupabaseAccessToken = async (token: string) => {
-  if (!supabaseAdmin || !token) {
-    return null;
-  }
-
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data.user) {
-    return null;
-  }
-
-  return data.user;
-};

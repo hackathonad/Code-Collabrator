@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { optionalAuth, verifyGuestSessionToken, type AuthenticatedRequest } from "../middleware/auth";
+import { guestSession, verifyGuestSessionToken } from "../middleware/guestSession";
 import { mediaService as defaultMediaService } from "../modules/media/liveKitMediaService";
 import { MediaUnavailableError, type MediaService } from "../modules/media/mediaTypes";
 import { roomStore } from "../modules/rooms/roomStore";
@@ -34,13 +34,10 @@ export const createMediaRoutes = (mediaService: MediaService = defaultMediaServi
     response.json({ ok: true, provider: status.provider, configured: status.configured });
   });
 
-  router.post("/rooms/:roomId/media/token", optionalAuth, async (request, response) => {
+  router.post("/rooms/:roomId/media/token", guestSession, async (request, response) => {
     const roomId = sanitizeRoomId(request.params.roomId);
     if (!roomId) { error(response, 400, "A valid room ID is required.", "INVALID_ROOM"); return; }
-    const identity = (request as AuthenticatedRequest).identity;
-    const userId = identity.kind === "member"
-      ? identity.userId
-      : verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
+    const userId = verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
     if (!userId) { error(response, 401, "A valid room session is required.", "ROOM_SESSION_INVALID"); return; }
     if (!allowTokenRequest(`${roomId}:${userId}`)) { error(response, 429, "Too many media token requests. Please wait a moment.", "RATE_LIMITED"); return; }
     if (!(await loadRoomIfNeeded(roomId))) { error(response, 404, "Room not found.", "ROOM_NOT_FOUND"); return; }

@@ -1,40 +1,28 @@
 import { Route, Routes, useLocation } from "react-router-dom";
-import { ProtectedRoute } from "./components/auth/ProtectedRoute";
-import { PublicOnlyRoute } from "./components/auth/PublicOnlyRoute";
-import { FirstLoadRoute } from "./components/auth/FirstLoadRoute";
 import { NetworkStatusBanner } from "./components/ui/NetworkStatusBanner";
 import { PublicFooter } from "./components/ui/PublicFooter";
 import { RouteMetadata } from "./components/ui/RouteMetadata";
-import { AuthCallbackPage } from "./pages/AuthCallbackPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { ForgotPasswordPage } from "./pages/ForgotPasswordPage";
 import { HomePage } from "./pages/HomePage";
-import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { PrivacyPage } from "./pages/PrivacyPage";
-import { ProfilePage } from "./pages/ProfilePage";
-import { RegisterPage } from "./pages/RegisterPage";
 import { RoomPage } from "./pages/RoomPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { TermsPage } from "./pages/TermsPage";
 
 const App = () => {
   const { pathname } = useLocation();
-  const showFooter = !pathname.startsWith("/room/");
+  const showFooter = !pathname.includes("/room/");
   return <>
     <RouteMetadata />
     <NetworkStatusBanner />
     <Routes>
-      <Route path="/" element={<FirstLoadRoute />} />
-      <Route path="/guest" element={<HomePage />} />
-      <Route path="/login" element={<PublicOnlyRoute><LoginPage /></PublicOnlyRoute>} />
-      <Route path="/register" element={<PublicOnlyRoute><RegisterPage /></PublicOnlyRoute>} />
-      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-      <Route path="/auth/callback" element={<AuthCallbackPage />} />
-      <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
-      <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
-      <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+      <Route path="/" element={<HomePage />} />
+      <Route path="/home" element={<HomePage />} />
+      <Route path="/app" element={<HomePage />} />
+      <Route path="/settings" element={<SettingsPage />} />
       <Route path="/room/:roomId" element={<RoomPage />} />
+      <Route path="/guest" element={<HomePage guestMode />} />
+      <Route path="/guest/room/:roomId" element={<RoomPage guestMode />} />
       <Route path="/privacy" element={<PrivacyPage />} />
       <Route path="/terms" element={<TermsPage />} />
       <Route path="*" element={<NotFoundPage />} />

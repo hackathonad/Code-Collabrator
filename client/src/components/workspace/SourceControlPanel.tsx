@@ -24,6 +24,6 @@ export const SourceControlPanel = ({ repository, loading, error }: SourceControl
       <div className="mt-1 flex items-center gap-1.5 text-[var(--text-muted)]"><GitFork className="h-3 w-3" />{metadata.currentBranch ?? "No branch selected"}</div>
       <p className="mt-1.5 text-[var(--text-secondary)]">{repository.status.state === "changes" ? statusLabel(changedFiles.length) : repository.message ?? "Working tree is clean."}</p>
     </div> : null}
-    {!loading && !error && !metadata ? <p className="mt-2 pb-1 text-xs leading-5 text-[var(--text-muted)]">Local workspace. Repository import and provider actions are ready to be connected.</p> : null}
+    {!loading && !error && !metadata ? <p className="mt-2 pb-1 text-xs leading-5 text-[var(--text-muted)]">{repository?.message ?? "No repository is connected. Git actions are unavailable for this workspace."}</p> : null}
   </section>;
 };

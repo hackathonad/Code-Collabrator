@@ -1,12 +1,7 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "client/package.json",
-      "use": "@vercel/static-build",
-      "config": { "distDir": "dist" }
-    }
-  ],
+  "buildCommand": "npm run build --workspace client",
+  "outputDirectory": "client/dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]

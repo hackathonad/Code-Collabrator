@@ -1,18 +1,14 @@
 # Production launch checklist
 
-Use this checklist after reviewing [deployment architecture](DEPLOYMENT.md) and the [environment reference](ENVIRONMENT.md).
-
-1. Push the intended revision to GitHub.
-2. Run `npm run verify` from the repository root.
-3. Apply these Supabase migrations in order: `202608030001_auth_persistence.sql`, `202608050001_workspace.sql`, `202608180001_phase7_accounts_github.sql`, and `202608180002_analytics.sql`.
-4. Configure the Supabase Auth Site URL and the deployed frontend origin plus `/auth/callback` as allowed redirects. Include local URLs only when they are needed.
-5. Deploy one persistent Node.js Web Service for the backend. Do not deploy the backend as a Vercel static site or serverless handler.
-6. Configure backend `NODE_ENV`, `CLIENT_URL`, and `GUEST_SESSION_SECRET`; add optional integration variables only as complete documented groups.
-7. Verify the backend public HTTPS origin returns success from `/health` and `/ready`.
-8. Configure the Vercel frontend project with root directory `client/`, build command `npm run build`, and output directory `dist`.
-9. Set `VITE_API_URL` and `VITE_SOCKET_URL` to the backend public HTTPS origin. Add `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` only when browser authentication is enabled.
-10. Redeploy the Vercel frontend after setting build-time variables.
-11. Test authentication as configured: registration/sign-in, callback handling, refresh, logout, and a guest room.
-12. Create a room in one browser and join it from a second browser or incognito window. Verify editor changes, cursors, files, chat, typing, reconnect behavior, and a Socket.IO connection.
-13. If configured, smoke-test AI, GitHub OAuth, LiveKit media, and the analytics dashboard independently. Their absence must not prevent room editing or chat.
-14. Confirm no service-role keys, OAuth secrets, AI keys, LiveKit secrets, guest-session secrets, or other credentials are present in Vercel `VITE_*` values, tracked files, CI logs, or browser bundles. Rotate any credential that was exposed.
+1. Run `npm run verify` from the repository root.
+2. If Supabase room persistence is enabled, apply `202608030001_auth_persistence.sql` and `202608050001_workspace.sql` in that order; apply later analytics/GitHub migrations only for those optional server features.
+3. Deploy one persistent Node.js Web Service for the backend; do not deploy Socket.IO as a static site or serverless function.
+4. Configure `NODE_ENV`, `CLIENT_URL`, and a unique production `GUEST_SESSION_SECRET`; add `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` only when persistence is desired.
+5. Verify `/health` and `/ready` on the backend HTTPS origin.
+6. Set Vercel build variables `VITE_API_URL`, `VITE_SOCKET_URL`, and optionally `VITE_PUBLIC_SITE_URL`.
+7. Redeploy the frontend after changing build-time variables.
+8. In a fresh browser, open `/`, choose a display name, create a room, edit, chat, open AI, and refresh.
+9. Join the same room from a second browser; verify presence, cursors, typing, editor sync, bounded chat/history, and reconnect recovery.
+10. Confirm the owner can delete the room, connected clients leave, the deleted room returns controlled 404 responses, and Quick Rejoin removes it.
+11. Confirm a persistence outage leaves guest collaboration usable in memory and does not claim a durable save.
+12. Confirm no service-role key, AI key, LiveKit secret, or guest-session secret appears in Vercel variables, tracked files, logs, or browser bundles.

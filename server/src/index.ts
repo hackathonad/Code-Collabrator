@@ -12,13 +12,15 @@ export const createRealtimeServer = () => {
   return { app, httpServer, io };
 };
 
-const closeServer = (httpServer: HttpServer, io: Server) => new Promise<void>((resolve, reject) => {
-  clearCollaborationRuntime();
-  io.close(() => {
-    if (!httpServer.listening) return resolve();
-    httpServer.close((error) => error ? reject(error) : resolve());
+const closeServer = async (httpServer: HttpServer, io: Server) => {
+  await clearCollaborationRuntime();
+  await new Promise<void>((resolve, reject) => {
+    io.close(() => {
+      if (!httpServer.listening) return resolve();
+      httpServer.close((error) => error ? reject(error) : resolve());
+    });
   });
-});
+};
 
 export const startServer = () => {
   assertProductionEnvironment();
@@ -39,7 +41,7 @@ export const startServer = () => {
   httpServer.listen(env.port, () => {
     const features = featureAvailability();
     console.info(`[startup] Code Collaborator backend listening on port ${env.port} (${env.nodeEnv}).`);
-    console.info(`[startup] persistence=${features.persistence ? "configured" : "not configured"}; github=${features.github ? "configured" : "not configured"}; media=${features.media ? "configured" : "not configured"}; ai=${Object.values(features.ai).filter(Boolean).length} configured provider(s).`);
+    console.info(`[startup] persistence=${features.persistence ? "configured" : "not configured"}; media=${features.media ? "configured" : "not configured"}; ai=${Object.values(features.ai).filter(Boolean).length} configured provider(s).`);
     if (environmentIssues.length) console.warn(`[startup] optional configuration warning(s): ${environmentIssues.join(" ")}`);
   });
   return { httpServer, io, shutdown };

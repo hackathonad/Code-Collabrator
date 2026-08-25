@@ -12,6 +12,17 @@ const upsertTypingParticipant = (participants: TypingParticipant[], participant:
     : [...participants, participant];
 };
 
+const MAX_HISTORY_ENTRIES = 30;
+const MAX_CHAT_MESSAGES = 100;
+
+const sortHistory = (history: HistoryEntry[]) => [...history]
+  .sort((left, right) => right.createdAt - left.createdAt)
+  .slice(0, MAX_HISTORY_ENTRIES);
+
+const sortChat = (messages: ChatMessage[]) => [...messages]
+  .sort((left, right) => left.timestamp - right.timestamp)
+  .slice(-MAX_CHAT_MESSAGES);
+
 
 const persistRoomBestEffort = (room: RoomSnapshot | null) => {
   if (!room) {
@@ -33,7 +44,8 @@ interface RoomStoreState {
   setConnectionStatus: (status: RoomStoreState["connectionStatus"]) => void;
   setError: (message: string | null) => void;
   setCode: (code: string, version?: number, fileId?: string) => void;
-  setLanguage: (language: SupportedLanguage, fileId?: string) => void;
+  setLanguage: (language: SupportedLanguage, fileId?: string, version?: number) => void;
+  syncEditor: (code: string, language: SupportedLanguage, version: number, fileId?: string) => void;
   syncWorkspace: (workspace: WorkspaceState, code: string, language: SupportedLanguage, version: number, history: HistoryEntry[]) => void;
   replaceParticipants: (participants: Participant[]) => void;
   upsertParticipant: (participant: Participant) => void;
@@ -53,20 +65,21 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
   chatTypingUsers: [],
   editorTypingUsers: [],
   setSession: (session) => set({ session }),
-  setRoom: (room) => {
-    set({
+  setRoom: (room) => set((state) => {
+    if (room && state.room && state.room.roomId === room.roomId && room.version < state.room.version) return state;
+    persistRoomBestEffort(room);
+    return {
       room,
       chatTypingUsers: [],
       editorTypingUsers: []
-    });
-
-    persistRoomBestEffort(room);
-  },
+    };
+  }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
   setError: (error) => set({ error }),
   setCode: (code, version, fileId) =>
     set((state) => {
       if (!state.room) return { room: null };
+      if (typeof version === "number" && version < state.room.version) return state;
       const targetFileId = fileId ?? state.room.workspace.activeFileId;
       const activeFile = state.room.workspace.files[targetFileId];
       const workspace = activeFile
@@ -76,9 +89,10 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
       persistRoomBestEffort(room);
       return { room };
     }),
-  setLanguage: (language, fileId) =>
+  setLanguage: (language, fileId, version) =>
     set((state) => {
       if (!state.room) return { room: null };
+      if (typeof version === "number" && version <= state.room.version) return state;
       const targetFileId = fileId ?? state.room.workspace.activeFileId;
       const activeFile = state.room.workspace.files[targetFileId];
       const workspace = activeFile
@@ -88,14 +102,32 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
       persistRoomBestEffort(room);
       return { room };
     }),
+  syncEditor: (code, language, version, fileId) =>
+    set((state) => {
+      if (!state.room || version <= state.room.version) return state;
+      const targetFileId = fileId ?? state.room.workspace.activeFileId;
+      const activeFile = state.room.workspace.files[targetFileId];
+      const workspace = activeFile
+        ? {
+            ...state.room.workspace,
+            language,
+            files: { ...state.room.workspace.files, [targetFileId]: { ...activeFile, content: code, language } }
+          }
+        : { ...state.room.workspace, language };
+      const room = { ...state.room, workspace, code, language, version };
+      persistRoomBestEffort(room);
+      return { room };
+    }),
   syncWorkspace: (workspace, code, language, version, history) =>
     set((state) => {
-      const room = state.room ? { ...state.room, workspace, code, language, version, history } : null;
+      if (!state.room || version <= state.room.version) return state;
+      const room = { ...state.room, workspace, code, language, version, history: sortHistory(history) };
       persistRoomBestEffort(room);
       return { room };
     }),
   replaceParticipants: (participants) =>
     set((state) => {
+      const participantIds = new Set(participants.filter((participant) => participant.isOnline).map((participant) => participant.userId));
       const room = state.room
         ? {
             ...state.room,
@@ -103,7 +135,11 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
           }
         : null;
       persistRoomBestEffort(room);
-      return { room };
+      return {
+        room,
+        chatTypingUsers: state.chatTypingUsers.filter((participant) => participantIds.has(participant.userId)),
+        editorTypingUsers: state.editorTypingUsers.filter((participant) => participantIds.has(participant.userId))
+      };
     }),
   upsertParticipant: (participant) =>
     set((state) => {
@@ -145,7 +181,7 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
       const room = state.room
         ? {
             ...state.room,
-            history
+            history: sortHistory(history)
           }
         : null;
       persistRoomBestEffort(room);
@@ -156,7 +192,9 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
       const room = state.room
         ? {
             ...state.room,
-            chat: state.room.chat.some((entry) => entry.id === message.id) ? state.room.chat : [...state.room.chat, message]
+            chat: state.room.chat.some((entry) => entry.id === message.id)
+              ? state.room.chat
+              : sortChat([...state.room.chat, message])
           }
         : null;
       persistRoomBestEffort(room);

@@ -17,11 +17,6 @@ export const sanitizeUsername = (value: unknown) =>
     .replace(/\s+/g, " ")
     .slice(0, MAX_USERNAME_LENGTH);
 
-export const sanitizeAccountUsername = (value: unknown) => {
-  const username = sanitizeUsername(value).toLowerCase();
-  return /^[a-z0-9][a-z0-9_-]{2,23}$/.test(username) ? username : "";
-};
-
 export const sanitizeMessage = (value: unknown) =>
   String(value ?? "")
     .trim()

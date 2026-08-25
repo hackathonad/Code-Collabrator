@@ -8,11 +8,8 @@ import { createOllamaProvider } from "./modules/ai/ollamaProvider";
 import { createGeminiProvider } from "./modules/ai/geminiProvider";
 import { createGroqProvider } from "./modules/ai/groqProvider";
 import roomRoutes from "./routes/roomRoutes";
-import authRoutes from "./routes/authRoutes";
 import aiRoutes from "./routes/aiRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
-import githubRoutes from "./routes/githubRoutes";
-import analyticsRoutes from "./routes/analyticsRoutes";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
 const API_RATE_LIMIT_MAX_REQUESTS = 180;
@@ -37,7 +34,7 @@ const apiLimiter: express.RequestHandler = (request, response, next) => {
 export const corsOptions: cors.CorsOptions = {
   origin(origin, callback) { callback(null, isAllowedClientOrigin(origin)); },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type"],
   credentials: false,
   maxAge: 86_400
 };
@@ -62,10 +59,7 @@ export const createApp = () => {
   app.get("/health", (_request, response) => response.json({ ok: true, service: "code-collaborator", timestamp: new Date().toISOString() }));
   app.get("/ready", (_request, response) => response.status(200).json({ ok: true, persistence: isSupabaseConfigured, features: featureAvailability() }));
   app.use("/api", apiLimiter);
-  app.use("/api", authRoutes);
   app.use("/api", mediaRoutes);
-  app.use("/api", githubRoutes);
-  app.use("/api", analyticsRoutes);
   app.use("/api/ai", aiRoutes);
   app.use("/api/rooms", roomRoutes);
   app.use("/api", (_request, response) => response.status(404).json({ ok: false, message: "API route not found." }));

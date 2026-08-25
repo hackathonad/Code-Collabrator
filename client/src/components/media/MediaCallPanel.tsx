@@ -15,6 +15,7 @@ const DevicePicker = ({ kind, label }: { kind: MediaDeviceKind; label: string })
 
 export const MediaCallPanel = ({ roomId, session, onClose }: { roomId: string; session: UserSession; onClose: () => void }) => {
   const state = useMediaStore();
+  const refreshConfiguration = useMediaStore((mediaState) => mediaState.refreshConfiguration);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [focusedShare, setFocusedShare] = useState<string | null>(null);
   const connected = state.connectionState === "connected" || state.connectionState === "reconnecting";
@@ -22,7 +23,7 @@ export const MediaCallPanel = ({ roomId, session, onClose }: { roomId: string; s
   const screenShares = state.participants.filter((participant) => participant.screenShareEnabled && participant.screenTrack);
   const featured = screenShares.find((participant) => participant.identity === focusedShare) ?? screenShares[0] ?? null;
   const tiles = useMemo(() => state.participants.filter((participant) => participant.identity !== featured?.identity), [state.participants, featured?.identity]);
-  useEffect(() => { void state.refreshConfiguration(); }, [roomId]);
+  useEffect(() => { void refreshConfiguration(); }, [refreshConfiguration, roomId]);
   useEffect(() => {
     const close = (event: KeyboardEvent) => { if (event.key === "Escape") setSettingsOpen(false); };
     window.addEventListener("keydown", close); return () => window.removeEventListener("keydown", close);

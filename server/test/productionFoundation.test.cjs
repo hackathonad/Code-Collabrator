@@ -4,10 +4,10 @@ const test = require("node:test");
 const { createApp } = require("../dist/app");
 const { parseServerEnvironment } = require("../dist/config/env");
 
-test("production configuration rejects missing browser origin and weak guest secret", () => {
+test("production configuration keeps a safe frontend default and rejects weak guest secrets", () => {
   const parsed = parseServerEnvironment({ NODE_ENV: "production" });
   assert.equal(parsed.config.isProduction, true);
-  assert.ok(parsed.issues.some((issue) => issue.includes("CLIENT_URL")));
+  assert.deepEqual(parsed.config.clientOrigins, ["https://code-collabrator-client.vercel.app"]);
   assert.ok(parsed.issues.some((issue) => issue.includes("GUEST_SESSION_SECRET")));
 
   const insecureOrigin = parseServerEnvironment({ NODE_ENV: "production", CLIENT_URL: "http://app.example.test", GUEST_SESSION_SECRET: "a-unique-production-secret-that-is-long-enough" });
