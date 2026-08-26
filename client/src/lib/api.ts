@@ -1,6 +1,7 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 import type { RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
+import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentRequestPayload } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import { storage } from "./storage";
 
@@ -14,7 +15,7 @@ export class ApiNetworkError extends Error {
 }
 
 export class ApiRequestError extends Error {
-  constructor(public readonly status: number, message: string) {
+  constructor(public readonly status: number, message: string, public readonly code?: string) {
     super(message);
     this.name = "ApiRequestError";
   }
@@ -81,7 +82,7 @@ const roomSessionQuery = (session?: UserSession | null) =>
 
 const readJson = async <T>(response: Response): Promise<T> => {
   if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as { message?: string };
+    const payload = (await response.json().catch(() => ({}))) as { message?: string; code?: string };
     const fallback = response.status === 400
       ? "The request was invalid. Check the room ID and submitted values."
       : response.status === 401
@@ -93,7 +94,7 @@ const readJson = async <T>(response: Response): Promise<T> => {
             : response.status === 429
               ? "Too many requests. Please wait a moment and try again."
               : "The server rejected the request. Try again shortly.";
-    throw new ApiRequestError(response.status, payload.message ?? fallback);
+    throw new ApiRequestError(response.status, payload.message ?? fallback, payload.code);
   }
 
   try {
@@ -237,8 +238,8 @@ export const api = {
       signal
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { message?: string };
-      throw new Error(payload.message ?? "AI streaming request failed");
+      const payload = await response.json().catch(() => ({})) as { message?: string; code?: string };
+      throw new ApiRequestError(response.status, payload.message ?? "AI streaming request failed", payload.code);
     }
     const reader = response.body?.getReader();
     if (!reader) throw new Error("AI provider did not return a streaming response");
@@ -252,7 +253,7 @@ export const api = {
       try { event = JSON.parse(payload) as AIStreamEvent; } catch { throw new Error("AI provider returned malformed streaming data."); }
       if (!event || !["delta", "complete", "error"].includes(event.type)) throw new Error("AI provider returned an invalid streaming event.");
       onEvent(event);
-      if (event.type === "error") throw new Error(event.message ?? "AI streaming request failed");
+      if (event.type === "error") throw new ApiRequestError(502, event.message ?? "AI streaming request failed", event.code);
     };
     try {
       while (true) {
@@ -268,5 +269,66 @@ export const api = {
     } finally {
       reader.releaseLock();
     }
+  },
+
+  async completeAgent(body: AgentRequestPayload, signal?: AbortSignal) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${body.roomId}/agent`), {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(body),
+      signal
+    });
+    const payload = await readJson<{ ok: true; result: AgentCompletionResult }>(response);
+    return payload.result;
+  },
+
+  async streamAgent(body: AgentRequestPayload, onEvent: (event: AgentEvent) => void, signal?: AbortSignal) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${body.roomId}/agent/stream`), {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify(body),
+      signal
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({})) as { message?: string; code?: string };
+      throw new ApiRequestError(response.status, payload.message ?? "Coding-agent streaming request failed", payload.code);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("The coding agent did not return a streaming response");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const consume = (line: string) => {
+      if (!line.startsWith("data:")) return;
+      const value = line.slice(5).trim();
+      if (!value) return;
+      let event: AgentEvent;
+      try { event = JSON.parse(value) as AgentEvent; } catch { throw new Error("The coding agent returned malformed streaming data."); }
+      if (!event || !["status", "plan", "tool_call", "tool_result", "patch_proposal", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
+      onEvent(event);
+      if (event.type === "error") throw new ApiRequestError(event.code === "TIMEOUT" ? 504 : 502, event.message, event.code);
+    };
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        lines.forEach(consume);
+      }
+      buffer += decoder.decode();
+      consume(buffer.trim());
+    } finally {
+      reader.releaseLock();
+    }
+  },
+
+  async applyAgentPatch(roomId: string, guestToken: string | undefined, patch: AgentPatch) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/patch`), {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ guestToken, patch })
+    });
+    return await readJson<{ ok: true; patch: AgentPatch; room: RoomSnapshot }>(response);
   }
 };

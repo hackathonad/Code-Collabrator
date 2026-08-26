@@ -2,11 +2,14 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const test = require("node:test");
 const { createApp } = require("../dist/app");
-const { createAIService } = require("../dist/modules/ai/aiService");
+const { aiService, createAIService } = require("../dist/modules/ai/aiService");
 const { AICancelledError, AIProviderRequestError, AIProviderUnavailableError } = require("../dist/modules/ai/aiTypes");
 const { GeminiProvider } = require("../dist/modules/ai/geminiProvider");
 const { GroqProvider } = require("../dist/modules/ai/groqProvider");
 const { OllamaProvider } = require("../dist/modules/ai/ollamaProvider");
+const { createOpenAIProvider } = require("../dist/modules/ai/openaiProvider");
+const { createOpenRouterProvider } = require("../dist/modules/ai/openrouterProvider");
+const { AnthropicProvider } = require("../dist/modules/ai/anthropicProvider");
 const { buildAIContext } = require("../dist/modules/ai/contextEngine");
 const { createPromptMessages } = require("../dist/modules/ai/promptLibrary");
 const { roomStore } = require("../dist/modules/rooms/roomStore");
@@ -76,7 +79,7 @@ test("Ollama reports timeouts safely and converts streaming chunks", async () =>
       }));
     }
   });
-  await assert.rejects(() => timedOut.complete(request()), (error) => error instanceof AIProviderRequestError && error.code === "REQUEST_TIMEOUT" && /timed out/.test(error.message));
+  await assert.rejects(() => timedOut.complete(request()), (error) => error instanceof AIProviderRequestError && error.code === "TIMEOUT" && /timed out/.test(error.message));
   assert.equal(tagsRequested, true);
 
   const caller = new AbortController();
@@ -148,6 +151,66 @@ test("cloud provider descriptors stay server-only, classify failures, and decode
   await assert.rejects(() => groq.complete({ ...request("llama-3.3-70b-versatile"), settings: { ...request().settings, provider: "groq", model: "llama-3.3-70b-versatile" } }), (error) => error instanceof AIProviderRequestError && error.code === "RATE_LIMITED");
 });
 
+test("all cloud providers expose safe availability and discover models", async () => {
+  const providerCases = [
+    {
+      provider: createOpenAIProvider({ apiKey: "openai-server-key", defaultModel: "gpt-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "gpt-test" }] }) : json({ choices: [{ message: { content: "OpenAI response" } }], usage: { prompt_tokens: 3, completion_tokens: 4, total_tokens: 7 } }) }),
+      id: "openai"
+    },
+    {
+      provider: createOpenRouterProvider({ apiKey: "router-server-key", defaultModel: "router-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "router-test" }] }) : json({ choices: [{ message: { content: "Router response" } }] }) }),
+      id: "openrouter"
+    },
+    {
+      provider: new AnthropicProvider({ apiKey: "anthropic-server-key", defaultModel: "claude-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "claude-test" }] }) : json({ content: [{ type: "text", text: "Anthropic response" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 6 } }) }),
+      id: "anthropic"
+    }
+  ];
+  for (const { provider, id } of providerCases) {
+    const descriptor = await provider.refreshDescriptor();
+    assert.equal(descriptor.id, id);
+    assert.equal(descriptor.available, true);
+    assert.equal(descriptor.health, "healthy");
+    assert.deepEqual(descriptor.models.map((model) => model.id), id === "openai" ? ["gpt-test"] : id === "openrouter" ? ["router-test"] : ["claude-test"]);
+    assert.equal(descriptor.name, id);
+    assert.deepEqual(descriptor.capabilities, ["chat", "streaming"]);
+    const result = await provider.complete({ ...request("gpt-test"), settings: { ...request().settings, provider: id, model: id === "openai" ? "gpt-test" : id === "openrouter" ? "router-test" : "claude-test" } });
+    assert.match(result.content, /response/);
+    assert.equal(result.provider, id);
+  }
+});
+
+test("provider service distinguishes not-configured, unavailable, and model-not-found", async () => {
+  const unconfigured = createOpenAIProvider({ apiKey: "" });
+  const unavailable = createOpenRouterProvider({ apiKey: "router-server-key", fetchImplementation: async () => { throw new TypeError("connection refused"); } });
+  const available = createOpenAIProvider({ apiKey: "openai-server-key", defaultModel: "gpt-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "gpt-test" }] }) : json({ choices: [{ message: { content: "ok" } }] }) });
+  const service = createAIService([unconfigured, unavailable, available]);
+  const descriptors = await service.refreshProviders();
+  assert.equal(descriptors.find((entry) => entry.id === "openai").available, true);
+  assert.equal(descriptors.find((entry) => entry.id === "openrouter").configured, true);
+  assert.equal(descriptors.find((entry) => entry.id === "openrouter").available, false);
+  assert.equal(descriptors.find((entry) => entry.id === "openrouter").health, "unavailable");
+  await assert.rejects(() => service.complete("gemini", { ...request("gemini-2.5-flash"), settings: { ...request().settings, provider: "gemini", model: "gemini-2.5-flash" } }), (error) => error.code === "PROVIDER_NOT_CONFIGURED");
+  await assert.rejects(() => service.complete("openai", { ...request("missing"), settings: { ...request().settings, provider: "openai", model: "missing" } }), (error) => error.code === "MODEL_NOT_FOUND");
+  await assert.rejects(() => service.complete("openrouter", { ...request("router-test"), settings: { ...request().settings, provider: "openrouter", model: "router-test" } }), (error) => error.code === "PROVIDER_UNAVAILABLE");
+});
+
+test("OpenAI-compatible and Anthropic streaming preserve deltas and safe usage metadata", async () => {
+  const encoder = new TextEncoder();
+  const openai = createOpenAIProvider({ apiKey: "openai-server-key", defaultModel: "gpt-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "gpt-test" }] }) : new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n')); controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":" there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\n')); controller.enqueue(encoder.encode("data: [DONE]\n\n")); controller.close(); } }), { status: 200 }) });
+  const openaiEvents = [];
+  for await (const event of openai.stream({ ...request("gpt-test"), settings: { ...request().settings, provider: "openai", model: "gpt-test", streaming: true } })) openaiEvents.push(event);
+  assert.deepEqual(openaiEvents.map((event) => event.type), ["delta", "delta", "complete"]);
+  assert.equal(openaiEvents.at(-1).result.content, "Hi there");
+  assert.equal(openaiEvents.at(-1).result.usage.totalTokens, 5);
+
+  const anthropic = new AnthropicProvider({ apiKey: "anthropic-server-key", defaultModel: "claude-test", fetchImplementation: async (url) => String(url).endsWith("/v1/models") ? json({ data: [{ id: "claude-test" }] }) : new Response(new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}\n\n')); controller.enqueue(encoder.encode('event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n')); controller.close(); } }), { status: 200 }) });
+  const anthropicEvents = [];
+  for await (const event of anthropic.stream({ ...request("claude-test"), settings: { ...request().settings, provider: "anthropic", model: "claude-test", streaming: true } })) anthropicEvents.push(event);
+  assert.equal(anthropicEvents.at(-1).result.content, "Hello");
+  assert.equal(anthropicEvents.at(-1).result.finishReason, "end_turn");
+});
+
 test("AI context remains bounded and excludes sensitive workspace files", () => {
   const created = roomStore.createRoom("Context owner");
   const snapshot = created.room;
@@ -205,6 +268,29 @@ test("AI room routes require a signed guest session", async () => {
     const { port } = server.address();
     const response = await fetch("http://127.0.0.1:" + port + "/api/ai/rooms/abcdef12/complete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ settings: request().settings, prompt: "hello", action: "explain" }) });
     assert.equal(response.status, 401);
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("provider API returns every safe descriptor without server credentials", async () => {
+  const ids = ["ollama", "gemini", "groq", "openrouter", "openai", "anthropic"];
+  const secret = "server-secret-must-not-appear";
+  const app = createApp();
+  for (const id of ids) {
+    const descriptor = { id, name: id, label: id, available: true, health: "healthy", capabilities: ["chat", "streaming"], supportsStreaming: true, supportsToolCalling: false, supportsVision: false, supportsLocalModels: id === "ollama", models: [{ id: `${id}-model`, label: `${id} model` }], defaultModel: `${id}-model` };
+    aiService.registerProvider({ id, descriptor, isConfigured: () => true, refreshDescriptor: async () => descriptor, complete: async () => ({ content: "ok", provider: id, model: `${id}-model` }), stream: async function* () { yield { type: "complete", result: { content: "ok", provider: id, model: `${id}-model` } }; } });
+  }
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = server.address();
+    const response = await fetch("http://127.0.0.1:" + port + "/api/ai/providers");
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.deepEqual(payload.providers.filter((entry) => ids.includes(entry.id)).map((entry) => entry.id), ids);
+    assert.equal(JSON.stringify(payload).includes(secret), false);
+    assert.ok(payload.providers.every((entry) => "name" in entry && "capabilities" in entry && "supportsToolCalling" in entry && "supportsVision" in entry));
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

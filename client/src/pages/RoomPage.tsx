@@ -25,6 +25,7 @@ import { useAIStore } from "../store/useAIStore";
 import { useMediaStore } from "../store/useMediaStore";
 import { useTheme } from "../context/ThemeContext";
 import type { RoomSnapshot, SupportedLanguage } from "../types/collaboration";
+import type { AgentPatch } from "../types/agent";
 
 type CollaborationPanel = "chat" | "ai" | "people" | "activity" | null;
 type ExecutionContext = { output: string; failed: boolean } | undefined;
@@ -134,6 +135,22 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     if (!room || room.isPaused || !window.confirm("Replace the active file with this AI code? You can undo this in the editor.")) return;
     if (!editorAIActionsRef.current?.replaceFile(generatedCode)) pushToast("Open the target file before replacing it");
     else pushToast("Active file replaced with AI code");
+  };
+
+  const applyAgentPatch = async (patch: AgentPatch) => {
+    if (!room || !session || room.isPaused) {
+      pushToast("Resume editing before applying an agent patch");
+      return;
+    }
+    try {
+      const result = await api.applyAgentPatch(room.roomId, session.guestToken, patch);
+      storage.saveRoomSnapshot(result.room);
+      setRoom(result.room);
+      useAIStore.getState().markAgentPatchApplied(patch.patchId);
+      pushToast(`Applied agent patch to ${patch.path}`);
+    } catch (issue) {
+      pushToast(issue instanceof Error ? issue.message : "The patch could not be applied");
+    }
   };
 
   useEffect(() => () => {
@@ -488,10 +505,11 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
               canInsert={!room.isPaused}
               execution={executionContext}
               onClose={() => setActivePanel(null)}
-              onInsertCode={insertAICode}
-              onReplaceSelection={replaceAISelection}
-              onReplaceFile={replaceAIFile}
-            />
+               onInsertCode={insertAICode}
+               onReplaceSelection={replaceAISelection}
+               onReplaceFile={replaceAIFile}
+               onApplyPatch={applyAgentPatch}
+             />
           ) : activePanel === "chat" ? (
             <ChatPanel
               messages={room.chat}

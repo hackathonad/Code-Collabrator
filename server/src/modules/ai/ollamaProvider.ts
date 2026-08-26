@@ -31,6 +31,8 @@ interface OllamaTagsPayload {
 interface OllamaChatPayload {
   message?: { content?: unknown; thinking?: unknown };
   done?: unknown;
+  prompt_eval_count?: unknown;
+  eval_count?: unknown;
 }
 
 const normalizeBaseUrl = (value: string) => {
@@ -53,10 +55,14 @@ export class OllamaProvider implements AIProviderAdapter {
   readonly id = "ollama" as const;
   readonly descriptor: ProviderDescriptor = {
     id: "ollama",
+    name: "ollama",
     label: "Ollama",
     available: false,
     health: "unavailable",
+    capabilities: ["chat", "streaming", "local-models"],
     supportsStreaming: true,
+    supportsToolCalling: false,
+    supportsVision: false,
     supportsLocalModels: true,
     models: [],
     defaultModel: null
@@ -95,7 +101,7 @@ export class OllamaProvider implements AIProviderAdapter {
       if (error instanceof AIProviderRequestError || error instanceof AICancelledError) throw error;
       if (signal?.aborted) throw new AICancelledError();
       if (error instanceof Error && error.name === "AbortError") {
-        throw new AIProviderRequestError("Ollama did not respond before the request timed out.", "REQUEST_TIMEOUT");
+        throw new AIProviderRequestError("Ollama did not respond before the request timed out.", "TIMEOUT");
       }
       throw new AIProviderUnavailableError("ollama", "Ollama is unavailable. Start the local Ollama server and try again.");
     } finally {
@@ -148,7 +154,7 @@ export class OllamaProvider implements AIProviderAdapter {
     }
     const model = request.settings.model || descriptor.defaultModel;
     if (!model || !descriptor.models.some((entry) => entry.id === model)) {
-      throw new AIProviderRequestError("The selected Ollama model is not installed.");
+      throw new AIProviderRequestError("The selected Ollama model is not installed.", "MODEL_NOT_FOUND");
     }
     return model;
   }
@@ -186,7 +192,9 @@ export class OllamaProvider implements AIProviderAdapter {
       ? payload.message.content
       : payload.message?.thinking;
     if (typeof content !== "string" || !content.trim()) throw new AIProviderRequestError("Ollama returned an empty response.");
-    return { content, provider: "ollama", model, finishReason: payload.done === true ? "stop" : undefined };
+    const promptTokens = typeof payload.prompt_eval_count === "number" ? payload.prompt_eval_count : undefined;
+    const completionTokens = typeof payload.eval_count === "number" ? payload.eval_count : undefined;
+    return { content, provider: "ollama", model, finishReason: payload.done === true ? "stop" : undefined, usage: promptTokens === undefined && completionTokens === undefined ? undefined : { promptTokens, completionTokens, totalTokens: promptTokens !== undefined && completionTokens !== undefined ? promptTokens + completionTokens : undefined } };
   }
 
   async *stream(request: AICompletionRequest): AsyncIterable<AIStreamEvent> {
@@ -196,7 +204,7 @@ export class OllamaProvider implements AIProviderAdapter {
       body: this.requestBody(request, model, true)
     }, request.signal);
     const reader = response.body?.getReader();
-    if (!reader) throw new AIProviderRequestError("Ollama did not provide a streaming response.");
+    if (!reader) throw new AIProviderRequestError("Ollama did not provide a streaming response.", "STREAM_ERROR");
     const decoder = new TextDecoder();
     let buffer = "";
     let content = "";
@@ -204,7 +212,7 @@ export class OllamaProvider implements AIProviderAdapter {
       const consume = (line: string) => {
         if (!line.trim()) return { type: "empty" as const };
         let event: OllamaChatPayload;
-        try { event = JSON.parse(line) as OllamaChatPayload; } catch { throw new AIProviderRequestError("Ollama returned malformed streaming data."); }
+        try { event = JSON.parse(line) as OllamaChatPayload; } catch { throw new AIProviderRequestError("Ollama returned malformed streaming data.", "STREAM_ERROR"); }
         const delta = event.message?.content;
         if (typeof delta === "string" && delta) { content += delta; return { type: "delta" as const, content: delta }; }
         return event.done === true ? { type: "complete" as const } : { type: "empty" as const };

@@ -3,6 +3,7 @@ import { roomStore } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
+import { subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import {
   isEditableRole,
   isRecord,
@@ -76,6 +77,7 @@ const EDITOR_TYPING_TIMEOUT_MS = 1_800;
 const RATE_LIMIT_WINDOW_MS = 1_000;
 const RATE_LIMIT_MAX_EVENTS = 80;
 const EDITOR_PERSIST_DEBOUNCE_MS = 1_500;
+const agentSocketSubscriptions = new Set<() => boolean>();
 
 /** Clears server-owned timers during a controlled process shutdown. */
 export const clearCollaborationRuntime = async () => {
@@ -90,6 +92,8 @@ export const clearCollaborationRuntime = async () => {
   persistenceTimers.clear();
   pendingPersistenceSnapshots.clear();
   rateLimitWindows.clear();
+  for (const unsubscribe of agentSocketSubscriptions) unsubscribe();
+  agentSocketSubscriptions.clear();
   socketRoomBindings.clear();
   await Promise.all(pendingSnapshots.map((snapshot) => roomPersistence.saveRoom(snapshot)));
   await roomPersistence.flush();
@@ -265,6 +269,25 @@ export const registerCollaborationSocket = (io: Server) => {
       void roomPersistence.saveRoom(snapshot);
     }, EDITOR_PERSIST_DEBOUNCE_MS));
   };
+
+  const unsubscribeAgentWorkspace = subscribeAgentWorkspaceChange((change) => {
+    io.to(change.roomId).emit("editor:sync", {
+      code: change.snapshot.code,
+      language: change.snapshot.language,
+      version: change.snapshot.version,
+      updatedBy: change.userId,
+      fileId: change.fileId
+    });
+    io.to(change.roomId).emit("workspace:sync", {
+      workspace: change.snapshot.workspace,
+      code: change.snapshot.code,
+      language: change.snapshot.language,
+      version: change.snapshot.version,
+      history: change.snapshot.history,
+      updatedBy: change.userId
+    });
+  });
+  agentSocketSubscriptions.add(unsubscribeAgentWorkspace);
 
 
   const checkRateLimit = (socket: Socket) => {

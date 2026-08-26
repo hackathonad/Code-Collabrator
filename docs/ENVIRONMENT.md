@@ -19,6 +19,12 @@ Copy `client/.env.example` and `server/.env.example` for local development. The 
 | `GEMINI_MODEL` | Server | Optional | Gemini model override. | No |
 | `GROQ_API_KEY` | Server | Optional | Server-only Groq credential. | No |
 | `GROQ_MODEL` | Server | Optional | Groq model override. | No |
+| `OPENROUTER_API_KEY` | Server | Optional | Server-only OpenRouter credential. | No |
+| `OPENROUTER_MODEL` | Server | Optional | OpenRouter model override. | No |
+| `OPENAI_API_KEY` | Server | Optional | Server-only OpenAI credential. | No |
+| `OPENAI_MODEL` | Server | Optional | OpenAI model override. | No |
+| `ANTHROPIC_API_KEY` | Server | Optional | Server-only Anthropic credential. | No |
+| `ANTHROPIC_MODEL` | Server | Optional | Anthropic model override. | No |
 | `LIVEKIT_URL` | Server | Optional; all three LiveKit values are required together | Public `ws:`/`wss:` media endpoint. | No |
 | `LIVEKIT_API_KEY` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
 | `LIVEKIT_API_SECRET` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
@@ -27,8 +33,14 @@ Supabase is database-only in this product. There are no browser Supabase variabl
 
 The current client intentionally does not read `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY`; do not add them to the frontend. Browser-local state is limited to signed guest sessions, Quick Rejoin, cached room snapshots, themes, and AI settings/conversations. Socket IDs, presence, cursors, typing state, and provider credentials are never stored there.
 
-`SUPABASE_JWT_SECRET`, `OPENAI_API_KEY`, `OPENAI_MODEL`, and `PISTON_URL` are not read by the current source and are not deployment requirements.
+## Coding-agent runtime
+
+The agent is enabled by the existing AI provider configuration; it does not require a new environment variable. Requests run on the backend against the authoritative guest-authorized room workspace. The runtime supports Ask, Edit, Debug, and Explain modes, nine bounded virtual-workspace tools, streamed activity events, and approval-gated exact patches. It never uses Supabase Auth or browser Supabase credentials.
+
+Validation tools use fixed npm categories (`typecheck`, `lint`, `tests`, `build`), `shell: false`, bounded output, and a 30-second limit. The child process environment removes variables whose names indicate API keys, secrets, tokens, passwords, Supabase, or guest-session credentials. Do not add provider credentials to client variables or include secrets in workspace files.
+
+`SUPABASE_JWT_SECRET` and `PISTON_URL` are not read by the current source and are not deployment requirements. OpenAI, Anthropic, and OpenRouter credentials are read only by the server-side AI adapters.
 
 ## AI provider setup
 
-The implemented adapters are Ollama, Gemini, and Groq. Provider credentials and upstream URLs stay on the persistent backend; no AI secret belongs in a `VITE_*` variable. Ollama is discovered dynamically through its `/api/tags` endpoint and the model list is cached briefly by the server. For local development, run `ollama serve`, pull a model such as `qwen3.5:latest`, and leave `OLLAMA_MODEL` blank to select the first discovered model (or set it to an installed model name). The client reads only the safe provider catalog from `GET /api/ai/providers`. If Ollama is unavailable or has no models, rooms, editing, chat, and Socket.IO remain usable and the AI panel reports the provider state.
+The implemented adapters are Ollama, Gemini, Groq, OpenRouter, OpenAI, and Anthropic. Provider credentials and upstream URLs stay on the persistent backend; no AI secret belongs in a `VITE_*` variable. The cloud adapters discover models through their provider model endpoints and cache the result briefly. For local development, run `ollama serve`, pull a model such as `qwen3.5:latest`, and leave `OLLAMA_MODEL` blank to select the first discovered model (or set it to an installed model name). The client reads only the safe provider catalog from `GET /api/ai/providers`. A provider is shown as not configured, unavailable, or available; unavailable providers cannot send requests, while rooms, editing, chat, and Socket.IO remain usable.

@@ -52,6 +52,12 @@ export interface ServerEnvironment {
   geminiModel: string;
   groqApiKey: string;
   groqModel: string;
+  openrouterApiKey: string;
+  openrouterModel: string;
+  openaiApiKey: string;
+  openaiModel: string;
+  anthropicApiKey: string;
+  anthropicModel: string;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
@@ -82,6 +88,12 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     geminiModel: source.GEMINI_MODEL?.trim() ?? "",
     groqApiKey: source.GROQ_API_KEY?.trim() ?? "",
     groqModel: source.GROQ_MODEL?.trim() ?? "",
+    openrouterApiKey: source.OPENROUTER_API_KEY?.trim() ?? "",
+    openrouterModel: source.OPENROUTER_MODEL?.trim() ?? "",
+    openaiApiKey: source.OPENAI_API_KEY?.trim() ?? "",
+    openaiModel: source.OPENAI_MODEL?.trim() ?? "",
+    anthropicApiKey: source.ANTHROPIC_API_KEY?.trim() ?? "",
+    anthropicModel: source.ANTHROPIC_MODEL?.trim() ?? "",
     livekitUrl: toLiveKitUrl(source.LIVEKIT_URL),
     livekitApiKey: source.LIVEKIT_API_KEY?.trim() ?? "",
     livekitApiSecret: source.LIVEKIT_API_SECRET?.trim() ?? "",
@@ -125,5 +137,12 @@ export const isAllowedClientOrigin = (origin: string | undefined) => {
 export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
-  ai: { ollama: Boolean(env.ollamaBaseUrl), gemini: Boolean(env.geminiApiKey), groq: Boolean(env.groqApiKey) }
+  ai: {
+    ollama: Boolean(env.ollamaBaseUrl),
+    gemini: Boolean(env.geminiApiKey),
+    groq: Boolean(env.groqApiKey),
+    openrouter: Boolean(env.openrouterApiKey),
+    openai: Boolean(env.openaiApiKey),
+    anthropic: Boolean(env.anthropicApiKey)
+  }
 });

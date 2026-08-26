@@ -22,7 +22,7 @@ Vercel serves the frontend build and rewrites SPA routes to `index.html`. It is 
 - Frontend: React, TypeScript, Vite, Tailwind, Monaco Editor
 - Backend: Node.js, Express, TypeScript, Socket.IO
 - Optional persistence: Supabase database
-- Optional AI: Ollama, Gemini, Groq
+- Optional AI: Ollama, Gemini, Groq, OpenRouter, OpenAI, Anthropic
 - Optional media: LiveKit
 
 ## Project structure
@@ -90,6 +90,7 @@ npm run test
 npm run test:media-client
 npm run test --workspace server
 npm run test:ai --workspace server
+npm run test:agent --workspace server
 npm run test:collaboration --workspace server
 npm run test:media --workspace server
 ```
@@ -102,6 +103,7 @@ npm run test:media --workspace server
 - Live shared editor state for JavaScript, Python, and C++
 - Remote cursors, participant roles, chat, typing indicators, and workspace files
 - Workspace-aware AI actions for explain, fix, refactor, test, document, review, and summary tasks
+- Safe coding-agent modes (Ask, Edit, Debug, Explain) with virtual-workspace tools, streamed activity, and approval-gated patches
 - Honest run workflow: copy/download source and open a language-matched external runner
 - Optional LiveKit voice, video, screen sharing, and device controls
 
@@ -124,7 +126,7 @@ If Supabase is unavailable or not configured, the same guest-first collaboration
 
 Apply the SQL files in `supabase/migrations/` in lexical order. The exact migration list, redirect requirements, and full environment reference are documented in [deployment architecture](docs/DEPLOYMENT.md) and [environment reference](docs/ENVIRONMENT.md).
 
-Ollama runs on the backend machine or network, not in the browser. Gemini, Groq, and LiveKit remain optional; leaving an integration unconfigured does not disable rooms, editing, or chat.
+Ollama runs on the backend machine or network, not in the browser. Gemini, Groq, OpenRouter, OpenAI, Anthropic, and LiveKit remain optional; leaving an integration unconfigured does not disable rooms, editing, or chat.
 
 ## Optional integrations
 
@@ -137,9 +139,19 @@ ollama serve
 ollama pull qwen3.5:latest
 ```
 
-The server discovers installed models from `OLLAMA_BASE_URL` and exposes only non-secret provider/model status through `GET /api/ai/providers`. Leave `OLLAMA_MODEL` blank to use the first discovered model, or set it to a discovered model name. The AI panel's Refresh control re-reads the cached model catalog. Ollama is not contacted directly by the browser and a local Ollama URL must not be used as a production Vercel variable. The currently implemented cloud adapters are Gemini and Groq; configure their server variables only when those providers are actually needed.
+The server discovers installed/cloud models and exposes only non-secret provider/model status through `GET /api/ai/providers`. Leave `OLLAMA_MODEL` blank to use the first discovered model, or set it to a discovered model name. The AI panel's Refresh control re-reads the cached model catalog. Ollama is not contacted directly by the browser and a local Ollama URL must not be used as a production Vercel variable. Configure cloud provider variables in the backend environment only when those providers are actually needed. The panel shows every provider as not configured, unavailable, or available; only available providers with a discovered model can send requests.
 
 LiveKit is optional. Calls use short-lived backend-issued room tokens that are bound to the current participant. Camera, microphone, and screen capture require direct browser user actions. Production media requires HTTPS and a secure `wss:` LiveKit endpoint.
+
+## Coding-agent workflow
+
+The AI panel uses one guest-authorized agent runtime for Ask, Edit, Debug, and Explain modes. The runtime sends normalized requests through the selected server-side provider, limits the loop to eight iterations and twenty tool calls, and emits concise status, plan, tool, validation, patch, final, and error events. Provider output is never treated as a permission grant.
+
+The initial tool registry is deliberately narrow: `READ_FILE`, `LIST_FILES`, `SEARCH_CODE`, `GET_CURRENT_FILE`, `GET_SELECTION`, `GET_WORKSPACE_SUMMARY`, `GET_DIAGNOSTICS`, `APPLY_PATCH`, and `RUN_VALIDATION`. Tools read the authoritative in-memory room workspace; they do not access the host filesystem. Paths are workspace-relative and reject traversal, absolute paths, ignored directories, and common secret files/content.
+
+Edit and Debug modes can return exact patch proposals. A proposal contains the file path, expected old content, replacement, line-change summary, and a stable patch ID. Applying it requires a separate user action and the server rechecks the room session, workspace, file path, patch identity, and exact single content match. Approved changes flow through `roomStore`, persistence, and Socket.IO synchronization.
+
+Validation is category-only (`typecheck`, `lint`, `tests`, or `build`) with fixed npm commands, `shell: false`, bounded output, a 30-second timeout, and a credential-sanitized child environment. The agent has no unrestricted shell, arbitrary command, browser, or operating-system file tool. Cancellation is propagated from the browser and the runtime has a 90-second overall deadline.
 
 ## Code execution workflow
 

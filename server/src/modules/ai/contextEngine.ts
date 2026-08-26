@@ -6,7 +6,7 @@ const SUMMARY_CACHE_TTL_MS = 15_000;
 const summaryCache = new Map<string, { expiresAt: number; value: string }>();
 const ignoredDirectory = /^(node_modules|dist|build|coverage|\.git)$/i;
 const sensitiveName = /(^|\/)(\.env(?:\..*)?|.*\.(pem|key|p12|pfx)|id_rsa|credentials(?:\..*)?|secrets?(?:\..*)?)$/i;
-const budgets = { minimal: 8_000, standard: 18_000, extended: 34_000 } as const;
+export const AI_CONTEXT_BUDGETS = { minimal: 8_000, standard: 18_000, extended: 34_000 } as const;
 
 const trimWithMarker = (value: string, limit: number) => value.length <= limit ? { value, truncated: false } : { value: `${value.slice(0, Math.max(0, limit - 30))}\n[...truncated for context budget]`, truncated: true };
 const pathForFolder = (workspace: WorkspaceState, folderId: string | null) => {
@@ -38,7 +38,7 @@ const relevantOpenFiles = (workspace: WorkspaceState, input: AIRequestInput, cur
 export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, repository: RepositorySummary | null): AIContextPayload => {
   // Reserve space for the JSON envelope, labels and accounting metadata. Every
   // user-controlled text section is then charged against the remaining budget.
-  const workspace = room.workspace; const budget = budgets[input.settings.workspaceContextSize]; let remaining = Math.max(0, budget - 1_200); let truncated = false;
+  const workspace = room.workspace; const budget = AI_CONTEXT_BUDGETS[input.settings.workspaceContextSize]; let remaining = Math.max(0, budget - 1_200); let truncated = false;
   const includedSections: string[] = []; const excludedSections: string[] = [];
   const include = (section: string, value: string, preferredLimit: number) => {
     if (!value || remaining <= 0) { if (value) excludedSections.push(section); return ""; }

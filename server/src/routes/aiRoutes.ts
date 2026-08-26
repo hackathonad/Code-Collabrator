@@ -12,7 +12,7 @@ import {
   type AIRequestInput,
   type AISettings
 } from "../modules/ai/aiTypes";
-import { buildAIContext } from "../modules/ai/contextEngine";
+import { AI_CONTEXT_BUDGETS, buildAIContext } from "../modules/ai/contextEngine";
 import { createPromptMessages } from "../modules/ai/promptLibrary";
 import { gitService } from "../modules/git/gitService";
 import { roomStore } from "../modules/rooms/roomStore";
@@ -37,7 +37,7 @@ interface PreparedAIRequest {
   roomId: string;
 }
 
-const sendError = (response: Response, status: number, message: string, code = "UNKNOWN_PROVIDER_ERROR") => response.status(status).json({ ok: false, message, code });
+const sendError = (response: Response, status: number, message: string, code = "UNKNOWN") => response.status(status).json({ ok: false, message, code });
 const loadRoomIfNeeded = async (roomId: string) => {
   if (roomStore.hasRoom(roomId)) return true;
   const persisted = await roomPersistence.loadRoom(roomId);
@@ -101,6 +101,9 @@ const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIReques
   const room = roomStore.getRoomSnapshot(roomId);
   const repository = await gitService.getSummary(room.workspace).catch(() => null);
   const context = buildAIContext(room, input, repository);
+  if (context.characterCount > AI_CONTEXT_BUDGETS[input.settings.workspaceContextSize]) {
+    throw new AIProviderRequestError("The selected workspace context is too large. Choose a smaller context setting and try again.", "CONTEXT_TOO_LARGE");
+  }
   return {
     input,
     context,
@@ -116,13 +119,21 @@ const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIReques
 const respondToAIError = (response: Response, error: unknown) => {
   if (error instanceof AIRequestRouteError) { sendError(response, error.status, error.message, error.code); return; }
   if (error instanceof AIProviderUnavailableError) { sendError(response, 503, error.message, error.code); return; }
-  if (error instanceof AIProviderRequestError) { sendError(response, error.code === "RATE_LIMITED" ? 429 : 502, error.message, error.code); return; }
+  if (error instanceof AIProviderRequestError) {
+    const status = error.code === "RATE_LIMITED" ? 429 : error.code === "INVALID_REQUEST" || error.code === "MODEL_NOT_FOUND" ? 400 : error.code === "CONTEXT_TOO_LARGE" ? 413 : error.code === "TIMEOUT" ? 504 : 502;
+    sendError(response, status, error.message, error.code);
+    return;
+  }
   if (error instanceof AICancelledError) { sendError(response, 499, error.message, "CANCELLED"); return; }
-  sendError(response, 500, "Unable to complete the AI request", "UNKNOWN_PROVIDER_ERROR");
+  sendError(response, 500, "Unable to complete the AI request", "UNKNOWN");
 };
 
 router.get("/providers", async (_request, response) => {
-  response.json({ ok: true, providers: await aiService.refreshProviders() });
+  try {
+    response.json({ ok: true, providers: await aiService.refreshProviders() });
+  } catch {
+    response.status(200).json({ ok: true, providers: aiService.getProviders() });
+  }
 });
 
 router.post("/rooms/:roomId/complete", guestSession, async (request, response) => {
@@ -166,7 +177,8 @@ router.post("/rooms/:roomId/stream", guestSession, async (request, response) => 
       : error instanceof AIProviderUnavailableError || error instanceof AIProviderRequestError
       ? error.message
       : "Unable to stream the AI response";
-    response.write("data: " + JSON.stringify({ type: "error", message }) + "\n\n");
+    const code = error instanceof AICancelledError ? "CANCELLED" : error instanceof AIProviderUnavailableError || error instanceof AIProviderRequestError ? error.code : "STREAM_ERROR";
+    response.write("data: " + JSON.stringify({ type: "error", message, code }) + "\n\n");
   } finally {
     response.off("close", abortIfDisconnected);
     response.end();

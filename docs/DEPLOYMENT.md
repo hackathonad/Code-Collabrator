@@ -52,7 +52,15 @@ Optional AI and media variables are documented in [ENVIRONMENT.md](ENVIRONMENT.m
 
 ### AI on the persistent backend
 
-AI requests run through the Express backend so provider credentials never reach the browser. The current adapters are Ollama, Gemini, and Groq. For a local Ollama backend, run `ollama serve`, pull an installed model (for example `ollama pull qwen3.5:latest`), and use `OLLAMA_BASE_URL`/`OLLAMA_MODEL` on the server. In production, the backend must be able to reach the configured Ollama URL; do not put a localhost Ollama URL in Vercel. `GET /api/ai/providers` returns safe availability and discovered model metadata only. A missing or unhealthy provider does not block the rest of the workspace.
+AI requests run through the Express backend so provider credentials never reach the browser. The current adapters are Ollama, Gemini, Groq, OpenRouter, OpenAI, and Anthropic. For a local Ollama backend, run `ollama serve`, pull an installed model (for example `ollama pull qwen3.5:latest`), and use `OLLAMA_BASE_URL`/`OLLAMA_MODEL` on the server. In production, the backend must be able to reach the configured Ollama URL; do not put a localhost Ollama URL in Vercel. Configure cloud provider keys only as Render server variables. `GET /api/ai/providers` returns safe availability, capabilities, and discovered model metadata only. A missing or unhealthy provider does not block the rest of the workspace.
+
+### Coding-agent deployment behavior
+
+The coding agent is served by the same persistent backend as the normal AI routes. The browser calls `POST /api/ai/rooms/:roomId/agent` or its SSE counterpart and includes the signed guest token; the server resolves the room and workspace instead of trusting client-supplied paths or workspace IDs. Configure at least one available provider/model before using the panel.
+
+The runtime exposes only `READ_FILE`, `LIST_FILES`, `SEARCH_CODE`, `GET_CURRENT_FILE`, `GET_SELECTION`, `GET_WORKSPACE_SUMMARY`, `GET_DIAGNOSTICS`, `APPLY_PATCH`, and `RUN_VALIDATION`. It does not expose unrestricted shell or host filesystem access. `RUN_VALIDATION` accepts only fixed `typecheck`, `lint`, `tests`, and `build` categories. Agent loops are bounded to eight iterations, twenty tool calls, a 90-second deadline, and bounded tool/provider context.
+
+Agent edits are proposals by default. `POST /api/ai/rooms/:roomId/agent/patch` applies a user-approved proposal only after rechecking its room, workspace, file, stable expected content, and patch identity. Successful changes are persisted through the existing room persistence service and broadcast as `editor:sync` and `workspace:sync` events, so connected guests converge on the same room snapshot. No deployment, Vercel, Render, or Supabase migration is performed by the agent.
 
 ## Supabase room persistence
 
