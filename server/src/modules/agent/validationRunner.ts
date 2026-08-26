@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { ValidationCategory, ValidationRunResult, ValidationRunner } from "./agentTypes";
 
 export const VALIDATION_COMMANDS: Record<ValidationCategory, { command: string; args: string[] }> = {
@@ -16,10 +17,13 @@ const clip = (value: string) => value.length <= MAX_OUTPUT ? value : `${value.sl
 export const createValidationRunner = (options: { cwd?: string; timeoutMs?: number } = {}): ValidationRunner => async (category, signal) => {
   const command = VALIDATION_COMMANDS[category];
   if (!command) throw new Error("Validation category is not allowed");
-  const executable = process.platform === "win32" ? "npm.cmd" : command.command;
+  const executable = process.platform === "win32" ? process.execPath : command.command;
+  const args = process.platform === "win32"
+    ? [path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), ...command.args]
+    : command.args;
   const startedAt = Date.now();
   const timeoutMs = options.timeoutMs ?? VALIDATION_TIMEOUT_MS;
-  const child = spawn(executable, command.args, {
+  const child = spawn(executable, args, {
     cwd: options.cwd ?? process.cwd(),
     shell: false,
     windowsHide: true,
@@ -28,6 +32,7 @@ export const createValidationRunner = (options: { cwd?: string; timeoutMs?: numb
   let stdout = "";
   let stderr = "";
   let timedOut = false;
+  let cancelled = false;
   const append = (target: "stdout" | "stderr", chunk: Buffer) => {
     const value = chunk.toString();
     if (target === "stdout") stdout = clip(stdout + value);
@@ -35,7 +40,7 @@ export const createValidationRunner = (options: { cwd?: string; timeoutMs?: numb
   };
   child.stdout.on("data", (chunk: Buffer) => append("stdout", chunk));
   child.stderr.on("data", (chunk: Buffer) => append("stderr", chunk));
-  const abort = () => child.kill("SIGTERM");
+  const abort = () => { cancelled = true; child.kill("SIGTERM"); };
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, timeoutMs);
   signal?.addEventListener("abort", abort, { once: true });
   const exitCode = await new Promise<number | null>((resolve, reject) => {
@@ -45,15 +50,16 @@ export const createValidationRunner = (options: { cwd?: string; timeoutMs?: numb
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
   });
-  const ok = !timedOut && exitCode === 0;
+  const ok = !timedOut && !cancelled && exitCode === 0;
   return {
     category,
     ok,
     exitCode,
     timedOut,
+    cancelled,
     stdout,
     stderr,
     durationMs: Date.now() - startedAt,
-    summary: timedOut ? `${category} timed out` : ok ? `${category} passed` : `${category} failed (exit ${exitCode ?? "unknown"})`
+    summary: timedOut ? `${category} timed out` : cancelled ? `${category} cancelled` : ok ? `${category} passed` : `${category} failed (exit ${exitCode ?? "unknown"})`
   } satisfies ValidationRunResult;
 };

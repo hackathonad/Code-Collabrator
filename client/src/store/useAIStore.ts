@@ -23,7 +23,19 @@ const titleFor = (action: AIAction, prompt: string) => {
   if (!text) return `${promptLabels[action]} code`;
   return text.length > 56 ? `${text.slice(0, 53)}…` : text;
 };
-
+const continuityFor = (events: AgentEvent[]) => {
+  const items = events.slice(-8).flatMap((event) => {
+    if (event.type === "status") return [`status: ${event.message}`];
+    if (event.type === "context") return [`context: ${event.files.length} relevant file(s)`];
+    if (event.type === "plan") return [`plan: ${event.steps.slice(0, 3).join("; ")}`];
+    if (event.type === "tool_result") return [`tool result: ${event.tool} — ${event.summary}`];
+    if (event.type === "patch_review") return [`patch review: ${event.findings.length} finding(s)`];
+    if (event.type === "review") return [`review: ${event.findings.length} finding(s)`];
+    if (event.type === "validation" || event.type === "execution") return [`validation: ${event.category} — ${event.summary}`];
+    return [];
+  });
+  return items.join("\n").replace(/(api[_-]?key|secret|password|token)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").slice(0, 3_600);
+};
 interface AIStoreState {
   roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; agentTasks: AgentTaskPublic[]; agentValidations: Record<string, AgentValidationSummary>; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
   initialize: (roomId: string, workspaceId: string) => Promise<void>; refreshProviders: () => Promise<void>;
@@ -38,10 +50,9 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     set({ loadingProviders: true });
     try {
       const providers = await api.getAIProviders(); const current = get().settings;
-      const selected = providers.find((provider) => provider.id === current.provider && provider.available);
-      const fallback = selected ?? providers.find((provider) => provider.id === "ollama" && provider.available) ?? providers.find((provider) => provider.available) ?? providers.find((provider) => provider.configured) ?? null;
-      const settings = fallback && (fallback.id !== current.provider || !fallback.models.some((model) => model.id === current.model))
-        ? { ...current, provider: fallback.id, model: fallback.defaultModel ?? fallback.models[0]?.id ?? "" }
+      const selected = providers.find((provider) => provider.id === current.provider);
+      const settings = selected?.available && !selected.models.some((model) => model.id === current.model)
+        ? { ...current, model: selected.defaultModel ?? selected.models[0]?.id ?? "" }
         : current;
       set({ providers, settings, loadingProviders: false }); savePersisted(get().conversations, settings);
     } catch { set({ loadingProviders: false, error: "Cannot reach the Code Collaborator server. AI providers could not be loaded." }); }
@@ -63,8 +74,17 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const agentProposalEvents = [...state.agentProposalEvents.filter((entry) => !(entry.patchId === event.patchId && entry.type === event.type)), event].slice(-40);
     return { agentPatches, agentProposalEvents };
   }),
-  receiveAgentTask: (event) => set((state) => event.task.roomId !== state.roomId ? state : { agentTasks: [event.task, ...state.agentTasks.filter((task) => task.taskId !== event.task.taskId)].slice(0, 40) }),
-  setAgentTaskHistory: (tasks) => set((state) => ({ agentTasks: tasks.filter((task) => task.roomId === state.roomId).slice(0, 40) })),
+  receiveAgentTask: (event) => set((state) => {
+    if (event.task.roomId !== state.roomId) return state;
+    const existing = state.agentTasks.find((task) => task.taskId === event.task.taskId);
+    if (existing && existing.updatedAt > event.task.updatedAt) return state;
+    return { agentTasks: [event.task, ...state.agentTasks.filter((task) => task.taskId !== event.task.taskId)].slice(0, 40) };
+  }),
+  setAgentTaskHistory: (tasks) => set((state) => {
+    const merged = new Map(state.agentTasks.filter((task) => task.roomId === state.roomId).map((task) => [task.taskId, task]));
+    tasks.filter((task) => task.roomId === state.roomId).forEach((task) => { const existing = merged.get(task.taskId); if (!existing || task.updatedAt >= existing.updatedAt) merged.set(task.taskId, task); });
+    return { agentTasks: [...merged.values()].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, 40) };
+  }),
   recordAgentValidation: (taskId, validation) => set((state) => ({ agentValidations: taskId ? { ...state.agentValidations, [taskId]: validation } : state.agentValidations })),
   markAgentPatchesStale: (version) => set((state) => ({ agentPatches: state.agentPatches.map((patch) => patch.status === "pending" && patch.baseVersion < version ? { ...patch, status: "stale" } : patch) })),
   markAgentPatchStatus: (patchId, status) => set((state) => ({ agentPatches: state.agentPatches.map((patch) => patch.patchId === patchId ? { ...patch, status, applied: status === "applied" } : patch) })),
@@ -96,13 +116,15 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
       set((latest) => {
         const nextActivity = [...latest.agentActivity, event].slice(-40);
         const nextPatches = event.type === "patch_proposal" && !latest.agentPatches.some((patch) => patch.patchId === event.patch.patchId) ? [...latest.agentPatches, event.patch].slice(-20) : latest.agentPatches;
-        return { agentActivity: nextActivity, agentPatches: nextPatches, lifecycle: event.type === "status" && event.message.toLowerCase().includes("prepar") ? "preparing-context" : event.type === "status" ? "streaming" : latest.lifecycle };
+        const message = event.type === "status" ? event.message.toLowerCase() : "";
+        const lifecycle = event.type === "patch_proposal" ? "waiting-for-approval" : event.type === "validation" || event.type === "execution" ? "validating" : event.type === "status" && message.includes("prepar") ? "preparing-context" : event.type === "status" ? "streaming" : latest.lifecycle;
+        return { agentActivity: nextActivity, agentPatches: nextPatches, lifecycle };
       });
       if (event.type === "final") setAssistantContent(event.text);
     };
     try {
       const history = conversation.messages.filter((message): message is AIConversationMessage & { role: "user" | "assistant" } => message.role === "user" || message.role === "assistant").slice(-8).map((message) => ({ role: message.role, content: message.content }));
-      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, intent: state.action, prompt: userMessage.content, currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
+      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, intent: state.action, prompt: userMessage.content, taskId: assistant.id, conversationId: conversation.id, continuitySummary: continuityFor(state.agentActivity), currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
       set({ lifecycle: "connecting" });
       if (state.settings.streaming && provider.supportsStreaming) {
         set({ lifecycle: "streaming" });
@@ -110,7 +132,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
       } else {
         const result = await api.completeAgent(request, controller.signal); if (isCurrent()) { result.events.forEach(handleAgentEvent); setAssistantContent(result.finalText); }
       }
-      if (isCurrent()) { activeController = null; activeRequestId = null; const latest = get(); set({ generating: false, lifecycle: "completed" }); savePersisted(latest.conversations, latest.settings); }
+      if (isCurrent()) { activeController = null; activeRequestId = null; const latest = get(); set({ generating: false, lifecycle: latest.agentPatches.length ? "waiting-for-approval" : "completed" }); savePersisted(latest.conversations, latest.settings); }
     } catch (error) {
       if (controller.signal.aborted) return;
       if (!isCurrent()) return;

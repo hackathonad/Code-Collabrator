@@ -8,6 +8,7 @@ const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
 const { buildAIContext, AI_CONTEXT_BUDGETS } = require("../dist/modules/ai/contextEngine");
 const { createAgentUserMessage } = require("../dist/modules/agent/agentPrompt");
 const { registerAgentProposal, subscribeAgentProposal, updateAgentProposal } = require("../dist/modules/agent/agentEvents");
+const { createValidationRunner } = require("../dist/modules/agent/validationRunner");
 
 const settings = { provider: "custom", model: "test-model", temperature: 0, maxTokens: 256, streaming: false, workspaceContextSize: "minimal" };
 const createFixture = () => {
@@ -49,6 +50,14 @@ test("room context includes bounded diagnostics and trusted metadata without flo
   assert.match(message, /<trusted-room-metadata>/);
   assert.match(message, /<untrusted-room-content>/);
   assert.doesNotMatch(message, /Recent room chat/);
+});
+
+test("agent continuity hints are bounded, labeled untrusted, and redact secret-like text", () => {
+  const fixture = createFixture();
+  const context = buildAIContext(fixture.room, { action: "explain", prompt: "Continue", currentFileId: fixture.request.currentFileId, conversation: [], settings }, null);
+  const message = createAgentUserMessage({ ...fixture.request, continuitySummary: "tool result: READ_FILE — token=do-not-share" }, context).content;
+  assert.match(message, /<previous-agent-activity source='untrusted'>/);
+  assert.match(message, /token= \[REDACTED\]/);
 });
 
 test("runtime rejects a request carrying another room or participant context", async () => {
@@ -187,6 +196,16 @@ test("validation accepts only fixed categories and uses the injected runner", as
   assert.equal(category, "tests");
   const invalid = await tools.run("RUN_VALIDATION", { category: "shell" });
   assert.equal(invalid.ok, false);
+});
+
+test("validation cancellation is reported without claiming a pass", async () => {
+  const controller = new AbortController();
+  const run = createValidationRunner({ timeoutMs: 2_000 })("tests", controller.signal);
+  controller.abort();
+  const result = await run;
+  assert.equal(result.ok, false);
+  assert.equal(result.cancelled, true);
+  assert.match(result.summary, /cancelled/i);
 });
 
 test("runtime executes one safe tool call at a time and returns a concise final", async () => {

@@ -1,5 +1,6 @@
 import type { RoomSnapshot } from "../rooms/roomTypes";
 import type { AgentPatch, AgentProposalEvent } from "./agentTypes";
+import { updateAgentTask } from "./agentTaskHistory";
 
 export interface AgentWorkspaceChange {
   roomId: string;
@@ -78,6 +79,7 @@ export const markAgentProposalsStale = (roomId: string, currentVersion: number) 
   for (const stored of proposals.values()) {
     if (stored.patch.roomId !== roomId || stored.status !== "proposal_created" || stored.patch.baseVersion >= currentVersion) continue;
     stored.status = "proposal_stale";
+    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
     const event = proposalEvent("proposal_stale", stored, currentVersion);
     events.push(event);
     emitAgentProposal(event);

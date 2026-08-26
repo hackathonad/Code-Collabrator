@@ -3,7 +3,7 @@ export type AIAction = "explain" | "generate" | "fix" | "optimize" | "refactor" 
 export type AIMessageRole = "user" | "assistant" | "error";
 export type AIProviderHealth = "healthy" | "unavailable" | "no-models" | "not-configured";
 export type AIProviderCapability = "chat" | "streaming" | "tools" | "vision" | "local-models";
-export type AILifecycleState = "idle" | "preparing-context" | "connecting" | "streaming" | "completed" | "cancelled" | "failed";
+export type AILifecycleState = "idle" | "preparing-context" | "connecting" | "streaming" | "waiting-for-approval" | "validating" | "completed" | "cancelled" | "timed-out" | "failed";
 export interface AIModelDescriptor { id: string; label: string; contextWindow?: number; }
 export interface AIProviderDescriptor { id: AIProviderId; name: string; label: string; configured: boolean; available: boolean; health: AIProviderHealth; capabilities: AIProviderCapability[]; supportsStreaming: boolean; supportsToolCalling: boolean; supportsVision: boolean; supportsLocalModels: boolean; models: AIModelDescriptor[]; defaultModel: string | null; }
 export interface AISettings { provider: AIProviderId; model: string; temperature: number; maxTokens: number; streaming: boolean; systemPrompt?: string; workspaceContextSize: "minimal" | "standard" | "extended"; }

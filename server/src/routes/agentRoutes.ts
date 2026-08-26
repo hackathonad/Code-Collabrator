@@ -6,9 +6,9 @@ import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
 import { emitAgentWorkspaceChange, getAgentProposal, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import { getAgentTaskHistory, recordTaskPatches, recordTaskValidation, startAgentTask, taskStatusForResult, updateAgentTask } from "../modules/agent/agentTaskHistory";
+import { getAgentTask, getAgentTaskHistory, recordTaskPatches, recordTaskValidation, startAgentTask, taskStatusForResult, updateAgentTask } from "../modules/agent/agentTaskHistory";
 import { createValidationRunner } from "../modules/agent/validationRunner";
-import type { AgentDiagnostic, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
+import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
@@ -103,6 +103,9 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
   const selection = selectedCode && selectionStart !== undefined && selectionEnd !== undefined ? { fileId: selectedCodeFileId, code: selectedCode, startOffset: selectionStart, endOffset: selectionEnd } : undefined;
   const executionRaw = isRecord(body.execution) ? body.execution : undefined;
   const execution = executionRaw && clip(executionRaw.output, 6_000) ? { output: clip(executionRaw.output, 6_000), failed: Boolean(executionRaw.failed) } : undefined;
+  const taskId = typeof body.taskId === "string" ? body.taskId.trim().slice(0, 128) : undefined;
+  const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim().slice(0, 128) : undefined;
+  const continuitySummary = typeof body.continuitySummary === "string" ? body.continuitySummary.slice(0, 4_000) : undefined;
   const activeFile = room.workspace.files[currentFileId] ?? room.workspace.files[room.workspace.activeFileId];
   const agent: AgentRequest = {
     roomId,
@@ -116,6 +119,9 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
     execution,
     diagnostics: parseDiagnostics(body.diagnostics),
     intent,
+    taskId,
+    conversationId,
+    continuitySummary,
     mode,
     language: activeFile?.language ?? room.language,
     settings,
@@ -130,6 +136,24 @@ const sendError = (response: Response, error: unknown) => {
   if (error instanceof AIProviderUnavailableError) { response.status(503).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof AIProviderRequestError) { response.status(error.code === "CONTEXT_TOO_LARGE" ? 413 : error.code === "RATE_LIMITED" ? 429 : 502).json({ ok: false, message: error.message, code: error.code }); return; }
   response.status(500).json({ ok: false, message: "Unable to complete the coding-agent request", code: "AGENT_ERROR" });
+};
+
+const updateTaskFromResult = (taskId: string, result: Awaited<ReturnType<typeof executeAgent>>) => {
+  const validation = [...result.events].reverse().find((event): event is Extract<AgentEvent, { type: "validation" }> => event.type === "validation");
+  if (validation) recordTaskValidation(taskId, validation.status ?? (validation.ok ? "passed" : "failed"), validation.summary);
+  recordTaskPatches(taskId, result.patches);
+  const terminal = taskStatusForResult(result.stoppedReason);
+  const waitingForApproval = result.patches.length > 0 && terminal === "completed";
+  updateAgentTask(taskId, { status: waitingForApproval ? "waiting_for_approval" : terminal });
+};
+
+const updateTaskFromError = (taskId: string, error: unknown) => {
+  const status = error instanceof AgentRuntimeError && error.code === "CANCELLED"
+    ? "cancelled"
+    : error instanceof AgentRuntimeError && error.code === "TIMEOUT"
+      ? "timed_out"
+      : "failed";
+  updateAgentTask(taskId, { status });
 };
 
 const approvedPatchFromBody = (body: Record<string, unknown>): AgentPatch & { suppliedPatchId?: string } => {
@@ -199,21 +223,27 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
   let taskId: string | undefined;
   try {
     const prepared = await prepareRequest(request as GuestRequest);
+    if (prepared.agent.taskId && getAgentTask(prepared.agent.taskId, prepared.agent.roomId, prepared.agent.userId)) throw new AgentRouteError(409, "This agent request was already started. Use its task history or start a new request.", "DUPLICATE_TASK");
     const task = startAgentTask(prepared.agent);
+    if (!task) throw new AgentRouteError(409, "This agent request was already started. Use its task history or start a new request.", "DUPLICATE_TASK");
     taskId = task.taskId;
+    updateAgentTask(taskId, { status: "planning" });
     updateAgentTask(taskId, { status: "running" });
     const result = await executeAgent({ ...prepared.agent, taskId }, prepared.room, undefined, {}, controller.signal);
     publishProposals(prepared.agent.userId, result.patches);
-    recordTaskPatches(taskId, result.patches);
-    updateAgentTask(taskId, { status: taskStatusForResult(result.stoppedReason) });
+    updateTaskFromResult(taskId, result);
     response.json({ ok: true, result });
-  } catch (error) { if (taskId) updateAgentTask(taskId, { status: "failed" }); if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
+  } catch (error) { if (taskId) updateTaskFromError(taskId, error); if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
   finally { request.off("close", abortRequest); }
 });
 
 router.post("/rooms/:roomId/agent/stream", guestSession, async (request, response) => {
   let prepared: Awaited<ReturnType<typeof prepareRequest>>;
   try { prepared = await prepareRequest(request as GuestRequest); } catch (error) { sendError(response, error); return; }
+  if (prepared.agent.taskId && getAgentTask(prepared.agent.taskId, prepared.agent.roomId, prepared.agent.userId)) {
+    response.status(409).json({ ok: false, message: "This agent request was already started. Use its task history or start a new request.", code: "DUPLICATE_TASK" });
+    return;
+  }
   response.status(200);
   response.setHeader("Content-Type", "text/event-stream");
   response.setHeader("Cache-Control", "no-cache, no-transform");
@@ -221,7 +251,12 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
   response.flushHeaders();
   const controller = new AbortController();
   const task = startAgentTask(prepared.agent);
+  if (!task) {
+    response.status(409).json({ ok: false, message: "This agent request was already started. Use its task history or start a new request.", code: "DUPLICATE_TASK" });
+    return;
+  }
   const taskId = task.taskId;
+  updateAgentTask(taskId, { status: "planning" });
   updateAgentTask(taskId, { status: "running" });
   const abortIfDisconnected = () => { if (!response.writableEnded) controller.abort(); };
   response.once("close", abortIfDisconnected);
@@ -230,10 +265,9 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
       if (event.type === "patch_proposal") registerAgentProposal(event.patch, prepared.agent.userId);
       if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify(event)}\n\n`);
     }, {}, controller.signal);
-    recordTaskPatches(taskId, result.patches);
-    updateAgentTask(taskId, { status: taskStatusForResult(result.stoppedReason) });
+    updateTaskFromResult(taskId, result);
   } catch (error) {
-    updateAgentTask(taskId, { status: "failed" });
+    updateTaskFromError(taskId, error);
     if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify({ type: "error", code: error instanceof AIProviderRequestError || error instanceof AIProviderUnavailableError ? error.code : "AGENT_ERROR", message: error instanceof Error ? error.message : "Unable to stream the coding-agent response" })}\n\n`);
   } finally {
     response.off("close", abortIfDisconnected);
@@ -249,7 +283,7 @@ router.get("/rooms/:roomId/agent/history", guestSession, async (request, respons
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
-    const history = getAgentTaskHistory(roomId, userId).map(({ taskId, roomId: taskRoomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }) => ({ taskId, roomId: taskRoomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }));
+    const history = getAgentTaskHistory(roomId, userId).map(({ taskId, roomId: taskRoomId, conversationId, mode, intent, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId: taskRoomId, ...(conversationId ? { conversationId } : {}), mode, intent, summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
     response.json({ ok: true, tasks: history });
   } catch (error) { sendError(response, error); }
 });
@@ -265,16 +299,22 @@ router.post("/rooms/:roomId/agent/validate", guestSession, async (request, respo
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
     const taskId = typeof body.taskId === "string" ? body.taskId.slice(0, 64) : "";
-    const task = taskId && getAgentTaskHistory(roomId, userId).some((entry) => entry.taskId === taskId) ? taskId : undefined;
-    if (task) recordTaskValidation(task, "running");
+    const taskRecord = taskId ? getAgentTask(taskId, roomId, userId) : null;
+    const task = taskRecord?.taskId;
+    if (task && taskRecord?.status === "waiting_for_approval") updateAgentTask(task, { status: "validating" });
+    if (task) recordTaskValidation(task, "running", "Validation is running");
     let validation: AgentValidationSummary;
     try {
       const result = await createValidationRunner()(category);
-      validation = { category, status: result.ok ? "passed" : "failed", summary: result.summary, output: [result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 12_000), durationMs: result.durationMs };
+      validation = { category, status: result.cancelled ? "skipped" : result.timedOut ? "unavailable" : result.ok ? "passed" : "failed", summary: result.summary, output: [result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 12_000), durationMs: result.durationMs };
     } catch (error) {
       validation = { category, status: "unavailable", summary: error instanceof Error ? error.message : "Validation was unavailable" };
     }
-    if (task) recordTaskValidation(task, validation.status);
+    if (task) {
+      recordTaskValidation(task, validation.status, validation.summary);
+      const currentTask = getAgentTask(task, roomId, userId);
+      if (currentTask?.status === "validating") updateAgentTask(task, { status: currentTask.patchStatus === "proposed" ? "waiting_for_approval" : "completed" });
+    }
     response.status(validation.status === "passed" ? 200 : 422).json({ ok: validation.status === "passed", validation, taskId: task });
   } catch (error) { sendError(response, error); }
 });
@@ -296,7 +336,7 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     if (!stored || stored.userId !== userId || stored.patch.roomId !== roomId || !proposalMatches(stored.patch, patch)) throw new AgentRouteError(409, "The proposal is no longer available for this room session", "PATCH_CONFLICT");
     if (stored.status === "proposal_stale" || patch.baseVersion !== room.version) {
       updateAgentProposal(patch.patchId, "proposal_stale", room.version);
-      if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "stale" });
+      if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
       throw new AgentRouteError(409, "This proposal is stale because the room changed. Generate a new proposal.", "PATCH_STALE");
     }
     if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
@@ -306,6 +346,7 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     if (patch.suppliedPatchId !== previewResult.patch.patchId || patch.baseVersion !== previewResult.patch.baseVersion) throw new AgentRouteError(409, "The patch identity does not match the current file", "PATCH_CONFLICT");
     if (patch.fileId && patch.fileId !== previewResult.patch.fileId) throw new AgentRouteError(409, "The patch file does not match its path", "PATCH_CONFLICT");
     updateAgentProposal(patch.patchId, "proposal_approved", room.version);
+    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "applying" });
     const appliedResult = await createAgentToolRegistry({
       room,
       request: patchAgentRequest(room, userId),
@@ -316,13 +357,17 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
       const currentVersion = roomStore.getRoomSnapshot(roomId).version;
       if (currentVersion !== patch.baseVersion) {
         updateAgentProposal(patch.patchId, "proposal_stale", currentVersion);
-        if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "stale" });
+        if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
       }
       throw new AgentRouteError(409, appliedResult.summary, currentVersion !== patch.baseVersion ? "PATCH_STALE" : "PATCH_CONFLICT");
     }
     await roomPersistence.saveRoom(roomStore.getRoomSnapshot(roomId));
     updateAgentProposal(patch.patchId, "proposal_applied", appliedResult.patch.baseVersion + 1);
-    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "applied" });
+    if (stored.patch.taskId) {
+      updateAgentTask(stored.patch.taskId, { status: "validating", patchStatus: "applied" });
+      recordTaskValidation(stored.patch.taskId, "skipped", "Automatic validation was skipped because room files are virtual; run an explicit fixed validation check from the panel.");
+      updateAgentTask(stored.patch.taskId, { status: "completed" });
+    }
     response.json({ ok: true, patch: appliedResult.patch, room: roomStore.getRoomSnapshot(roomId) });
   } catch (error) { sendError(response, error); }
 });
@@ -345,7 +390,7 @@ router.post("/rooms/:roomId/agent/proposal", guestSession, async (request, respo
     }
     if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
     updateAgentProposal(patchId, "proposal_rejected");
-    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "rejected" });
+    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "completed", patchStatus: "rejected" });
     response.json({ ok: true, status: "rejected", patchId });
   } catch (error) { sendError(response, error); }
 });

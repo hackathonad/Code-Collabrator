@@ -153,9 +153,11 @@ Edit and Debug modes can return exact patch proposals. A proposal contains the f
 
 Complex requests receive a bounded context map and explicit plan before model work. Review mode returns structured severity, evidence, and suggestions; refactor and test actions remain proposal-first. The panel shows recent room-scoped task history, patch review findings, and an explicit validation control. Provider recommendations are advisory only: the selected provider/model is never silently changed. Task history is bounded and excludes prompts, credentials, provider names, and hidden reasoning from room-visible events.
 
+Each request carries a room-scoped conversation ID and task ID. Task state is server-validated through `queued`, `planning`, `running`, `waiting_for_approval`, `applying`, `validating`, and `completed`, with safe `cancelled`, `failed`, `timed_out`, and `conflict` terminal states. Reconnects replay bounded task history and ignore older out-of-order updates; duplicate task IDs are rejected instead of being run twice.
+
 Validation is category-only (`typecheck`, `lint`, `tests`, or `build`) with fixed npm commands, `shell: false`, bounded output, a 30-second timeout, and a credential-sanitized child environment. The agent has no unrestricted shell, arbitrary command, browser, or operating-system file tool. Cancellation is propagated from the browser and the runtime has a 90-second overall deadline.
 
-Because room files are virtual and are not materialized into a separate execution sandbox, these checks validate the fixed backend workspace commands; they do not execute arbitrary room code or claim that room code passed.
+Validation reports `not-run`, `running`, `passed`, `failed`, `skipped`, or `unavailable`. Because room files are virtual and are not materialized into a separate execution sandbox, automatic post-apply validation is skipped; explicit checks validate fixed backend workspace commands and do not execute arbitrary room code or claim that room code passed.
 
 Monaco editor diagnostics are forwarded as bounded, structured, untrusted evidence with file and location metadata. If the external Programiz runner is opened, its stdout, stderr, timing, and exit code remain unavailable to the application; the agent is told that no execution result was provided rather than being given a fabricated result.
 

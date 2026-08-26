@@ -136,7 +136,7 @@ const getProjectIndex = (context: AgentToolContext): AgentToolResult => {
 };
 
 const getTaskHistory = (context: AgentToolContext): AgentToolResult => {
-  const history = getAgentTaskHistory(context.room.roomId, context.request.userId).map(({ taskId, roomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }));
+  const history = getAgentTaskHistory(context.room.roomId, context.request.userId).map(({ taskId, roomId, conversationId, mode, intent, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, ...(conversationId ? { conversationId } : {}), mode, intent, summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
   return { ok: true, summary: `Found ${history.length} recent coding-agent task(s)`, data: { tasks: history } };
 };
 
@@ -218,7 +218,8 @@ const runValidation = async (context: AgentToolContext, args: Record<string, unk
   if (!category || !["typecheck", "lint", "tests", "build"].includes(category)) return { ok: false, summary: "RUN_VALIDATION accepts only typecheck, lint, tests, or build" };
   const result = await (context.validationRunner ?? createValidationRunner())(category, context.signal);
   const output = clip(redacted([result.stdout, result.stderr].filter(Boolean).join("\n")), 12_000);
-  return { ok: result.ok, summary: result.summary, validation: { category, ok: result.ok, summary: result.summary, output }, data: { category, ok: result.ok, exitCode: result.exitCode, timedOut: result.timedOut, durationMs: result.durationMs, output } };
+  const status = result.cancelled ? "skipped" : result.timedOut ? "unavailable" : result.ok ? "passed" : "failed";
+  return { ok: result.ok, summary: result.summary, validation: { category, ok: result.ok, status, summary: result.summary, output }, data: { category, ok: result.ok, status, exitCode: result.exitCode, timedOut: result.timedOut, cancelled: result.cancelled, durationMs: result.durationMs, output } };
 };
 
 export const createAgentToolRegistry = (context: AgentToolContext): AgentToolRegistry => ({

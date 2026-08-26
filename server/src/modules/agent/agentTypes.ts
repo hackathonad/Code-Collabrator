@@ -13,8 +13,8 @@ import type {
 
 export type AgentMode = "ASK" | "EDIT" | "DEBUG" | "EXPLAIN";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
-export type AgentTaskStatus = "started" | "running" | "completed" | "failed" | "cancelled" | "timeout";
-export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "unavailable";
+export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
+export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable";
 export type AgentToolName =
   | "READ_FILE"
   | "LIST_FILES"
@@ -60,6 +60,8 @@ export interface AgentRequest {
   diagnostics?: AgentDiagnostic[];
   intent?: AIAction;
   taskId?: string;
+  conversationId?: string;
+  continuitySummary?: string;
   mode: AgentMode;
   language: SupportedLanguage;
   settings: AISettings;
@@ -119,12 +121,14 @@ export interface AgentValidationSummary {
 export interface AgentTaskPublic {
   taskId: string;
   roomId: string;
+  conversationId?: string;
   mode: AgentMode;
   intent: AIAction;
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
   validationStatus: AgentValidationStatus;
+  validationSummary?: string;
   patchCount: number;
   createdAt: number;
   updatedAt: number;
@@ -152,8 +156,8 @@ export type AgentEvent =
   | { type: "patch_proposal"; patch: AgentPatch }
   | { type: "patch_review"; patchId: string; findings: AgentReviewFinding[] }
   | { type: "review"; findings: AgentReviewFinding[] }
-  | { type: "validation"; category: ValidationCategory; ok: boolean; summary: string; output?: string }
-  | { type: "execution"; category: ValidationCategory; ok: boolean; summary: string; output?: string }
+  | { type: "validation"; category: ValidationCategory; ok: boolean; status?: AgentValidationStatus; summary: string; output?: string }
+  | { type: "execution"; category: ValidationCategory; ok: boolean; status?: AgentValidationStatus; summary: string; output?: string }
   | { type: "final"; text: string }
   | { type: "error"; code: string; message: string };
 
@@ -185,7 +189,7 @@ export interface AgentToolResult {
   summary: string;
   data?: unknown;
   patch?: AgentPatch;
-  validation?: { category: ValidationCategory; ok: boolean; summary: string; output?: string };
+  validation?: { category: ValidationCategory; ok: boolean; status: AgentValidationStatus; summary: string; output?: string };
 }
 
 export interface AgentToolRegistry {
@@ -198,6 +202,7 @@ export interface ValidationRunResult {
   ok: boolean;
   exitCode: number | null;
   timedOut: boolean;
+  cancelled?: boolean;
   stdout: string;
   stderr: string;
   durationMs: number;

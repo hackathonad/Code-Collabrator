@@ -6,7 +6,7 @@ const { buildProjectIndex, createTaskPlan, isComplexTask, recommendProvider, rev
 const { createAgentToolRegistry } = require("../dist/modules/agent/agentToolRegistry");
 const { parseAgentAction } = require("../dist/modules/agent/agentRuntime");
 const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
-const { getPublicAgentTaskHistory, startAgentTask } = require("../dist/modules/agent/agentTaskHistory");
+const { canTransitionAgentTask, getAgentTask, getPublicAgentTaskHistory, startAgentTask, taskStatusForResult, updateAgentTask, subscribeAgentTasks } = require("../dist/modules/agent/agentTaskHistory");
 
 const settings = { provider: "custom", model: "test-model", temperature: 0, maxTokens: 256, streaming: false, workspaceContextSize: "minimal" };
 const fixture = () => {
@@ -111,4 +111,28 @@ test("provider recommendation is advisory and task history is bounded and redact
   assert.equal(history.length, 40);
   assert.ok(history.every((task) => !task.summary.includes("super-secret-value")));
   assert.ok(history.every((task) => !Object.hasOwn(task, "provider") && !Object.hasOwn(task, "model") && !Object.hasOwn(task, "userId")));
+});
+
+test("task lifecycle is deterministic, recoverable, and rejects duplicate task IDs", () => {
+  const value = fixture();
+  const taskId = `task-${value.room.roomId}`;
+  const events = [];
+  const unsubscribe = subscribeAgentTasks((event) => { if (event.task.taskId === taskId) events.push(event); });
+  const task = startAgentTask({ ...value.request, taskId, conversationId: "conversation-1" });
+  assert.equal(task.status, "queued");
+  assert.equal(startAgentTask({ ...value.request, taskId }), null);
+  assert.equal(startAgentTask({ ...fixture().request, taskId }), null, "task IDs remain unambiguous across rooms");
+  for (const status of ["planning", "running", "waiting_for_approval", "validating", "waiting_for_approval", "applying", "validating", "completed"]) {
+    assert.ok(updateAgentTask(taskId, { status }), status);
+  }
+  assert.equal(updateAgentTask(taskId, { status: "running" }), null, "terminal tasks cannot restart");
+  assert.equal(canTransitionAgentTask("running", "timed_out"), true);
+  assert.equal(taskStatusForResult("timeout"), "timed_out");
+  assert.equal(taskStatusForResult("cancelled"), "cancelled");
+  const publicTask = getPublicAgentTaskHistory(value.room.roomId, value.request.userId)[0];
+  assert.equal(publicTask.conversationId, "conversation-1");
+  assert.equal(publicTask.status, "completed");
+  assert.ok(events.some((event) => event.task.status === "waiting_for_approval"));
+  assert.equal(getAgentTask(taskId, value.room.roomId, value.request.userId).status, "completed");
+  unsubscribe();
 });
