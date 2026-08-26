@@ -58,12 +58,13 @@ AI requests run through the Express backend so provider credentials never reach 
 
 Supabase is database-only; it is not an authentication requirement and the browser does not create a Supabase client. For the current guest-first room persistence path, apply these migrations in lexical order:
 
-1. `supabase/migrations/202608030001_auth_persistence.sql` — creates `rooms`, `room_members`, and `room_history`.
+1. `supabase/migrations/202608030001_auth_persistence.sql` — legacy filename; creates the database-only `rooms`, `room_members`, and `room_history` tables.
 2. `supabase/migrations/202608050001_workspace.sql` — adds the durable workspace snapshot column used by the server.
+3. `supabase/migrations/202608260001_guest_database_only.sql` — removes Auth foreign keys and policies from databases that applied the earlier legacy schema.
 
 The later analytics and GitHub/account migrations are not required for guest room collaboration. Apply them only when those separately implemented server features are enabled. The active room persistence layer stores room/workspace snapshots, code, chat, bounded history, and membership metadata. It deliberately does not persist socket IDs, online/presence state, cursors, or typing state. Writes are debounced for editor changes and serialized by room/version so an older snapshot cannot overwrite a newer one. The service-role client remains server-only.
 
-Persistence failures are caught and logged with safe diagnostic messages. In-memory rooms and guest collaboration continue when persistence is unavailable; `/ready` reports configuration availability, not a guarantee that a remote write will succeed. Restarting the backend then loses rooms that were not persisted. Deletion first invalidates the persisted room when Supabase is configured, then removes the authoritative in-memory room and notifies connected clients; failed persistence leaves the room intact and returns a controlled `503` response.
+Persistence failures are caught and logged with safe diagnostic messages containing the database error code, message, details, and hint; credentials are never logged. In-memory rooms and guest collaboration continue when persistence is unavailable. `/health` is process liveness; `/ready` remains available and reports separate persistence configuration and schema/database health. Restarting the backend then loses rooms that were not persisted. Deletion first invalidates the authoritative in-memory room, then attempts the durable `deleted_at` tombstone; a failed durable write returns a controlled `503` while the room remains deleted in the current process.
 
 Room lifecycle and reconnect behavior:
 

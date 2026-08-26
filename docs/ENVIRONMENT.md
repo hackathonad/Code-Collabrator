@@ -23,7 +23,7 @@ Copy `client/.env.example` and `server/.env.example` for local development. The 
 | `LIVEKIT_API_KEY` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
 | `LIVEKIT_API_SECRET` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
 
-Supabase is database-only in this product. There are no browser Supabase variables and no Supabase Auth session requirement. If persistence is disabled or unavailable, the server keeps rooms in memory and reports persistence as unavailable through `/ready` without exposing secrets.
+Supabase is database-only in this product. There are no browser Supabase variables and no Supabase Auth session requirement. If persistence is disabled or unavailable, the server keeps rooms in memory and `/ready` reports `persistence.configured`, `persistence.healthy`, and a generic status without exposing provider details to the browser.
 
 The current client intentionally does not read `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY`; do not add them to the frontend. Browser-local state is limited to signed guest sessions, Quick Rejoin, cached room snapshots, themes, and AI settings/conversations. Socket IDs, presence, cursors, typing state, and provider credentials are never stored there.
 

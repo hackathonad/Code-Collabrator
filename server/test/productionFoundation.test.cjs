@@ -33,6 +33,9 @@ test("health, readiness, safe headers, and unknown API handling are available wi
     assert.equal(health.headers.get("x-content-type-options"), "nosniff");
     const ready = await fetch(`${baseUrl}/ready`).then((response) => response.json());
     assert.equal(ready.ok, true);
+    assert.equal(typeof ready.persistence.configured, "boolean");
+    assert.equal(typeof ready.persistence.healthy, "boolean");
+    assert.ok(["not-configured", "healthy", "unavailable"].includes(ready.persistence.status));
     const missing = await fetch(`${baseUrl}/api/does-not-exist`);
     assert.equal(missing.status, 404);
     assert.equal((await missing.json()).message, "API route not found.");

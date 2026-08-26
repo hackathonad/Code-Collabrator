@@ -8,7 +8,7 @@ create table if not exists public.analytics_events (
     'ai_request_failed', 'git_commit', 'git_push', 'git_pull', 'github_repository_imported',
     'media_call_joined', 'media_call_left', 'screen_share_started', 'screen_share_stopped'
   )),
-  user_id uuid not null references auth.users(id) on delete cascade,
+  user_id uuid not null,
   room_id text,
   workspace_id text,
   metadata jsonb not null default '{}'::jsonb,

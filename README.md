@@ -156,6 +156,6 @@ The current application does not execute user code inside the browser or backend
 ## Notes
 
 - The backend stores live room state in memory between persisted snapshots. Run one realtime backend instance unless a future Socket.IO adapter and shared-state design are added.
-- `/health` reports that the backend process is alive. `/ready` reports safe feature availability without returning secret values.
+- `/health` reports that the backend process is alive. `/ready` reports safe feature availability plus optional persistence configuration/schema health without returning secret values.
 - Guest-session signatures are tied to `GUEST_SESSION_SECRET`; changing that server secret invalidates existing guest sessions.
 - Room authorization remains server-side even though identity is guest-first: signed room tokens, membership checks, socket binding, owner checks, rate limits, and payload validation are still enforced.

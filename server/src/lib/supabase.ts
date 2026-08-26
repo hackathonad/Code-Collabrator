@@ -13,6 +13,3 @@ export const supabaseAdmin =
         }
       })
     : null;
-
-export const supabase = supabaseAdmin;
-export const isSupabaseConfigured = Boolean(supabaseAdmin);

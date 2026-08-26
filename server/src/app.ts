@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import cors from "cors";
 import express from "express";
 import { env, featureAvailability, isAllowedClientOrigin } from "./config/env";
-import { isSupabaseConfigured } from "./lib/supabase";
 import { aiService } from "./modules/ai/aiService";
 import { createOllamaProvider } from "./modules/ai/ollamaProvider";
 import { createGeminiProvider } from "./modules/ai/geminiProvider";
@@ -10,6 +9,7 @@ import { createGroqProvider } from "./modules/ai/groqProvider";
 import roomRoutes from "./routes/roomRoutes";
 import aiRoutes from "./routes/aiRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
+import { roomPersistence } from "./services/roomPersistence";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
 const API_RATE_LIMIT_MAX_REQUESTS = 180;
@@ -57,7 +57,10 @@ export const createApp = () => {
   app.use(cors(corsOptions));
   app.use(express.json({ limit: "1mb", strict: true }));
   app.get("/health", (_request, response) => response.json({ ok: true, service: "code-collaborator", timestamp: new Date().toISOString() }));
-  app.get("/ready", (_request, response) => response.status(200).json({ ok: true, persistence: isSupabaseConfigured, features: featureAvailability() }));
+  app.get("/ready", async (_request, response) => {
+    const persistence = await roomPersistence.checkReadiness();
+    response.status(200).json({ ok: true, persistence, features: featureAvailability() });
+  });
   app.use("/api", apiLimiter);
   app.use("/api", mediaRoutes);
   app.use("/api/ai", aiRoutes);

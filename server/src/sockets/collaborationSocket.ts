@@ -414,17 +414,21 @@ export const registerCollaborationSocket = (io: Server) => {
         acknowledge?.({ ok: false, message });
         return;
       }
-      const persisted = await roomPersistence.deleteRoom(payload.roomId);
-      if (!persisted) {
-        const message = "The room could not be deleted from persistence. Try again shortly.";
-        reject(socket, message);
-        acknowledge?.({ ok: false, message });
-        return;
-      }
+      // Invalidate the authoritative live room and notify clients before the
+      // optional persistence operation. A database outage must not preserve a
+      // usable room in memory.
       roomStore.deleteRoom(payload.roomId, payload.actingUserId);
       io.to(payload.roomId).emit("room:deleted");
       clearRoomTracking(payload.roomId);
       io.in(payload.roomId).socketsLeave(payload.roomId);
+
+      const persisted = await roomPersistence.deleteRoom(payload.roomId);
+      if (!persisted) {
+        const message = "The room was deleted from active memory, but durable persistence could not be updated.";
+        reject(socket, message);
+        acknowledge?.({ ok: false, message });
+        return;
+      }
       acknowledge?.({ ok: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to delete room";

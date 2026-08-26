@@ -1,4 +1,5 @@
--- Phase 7: account profile fields and encrypted, server-managed GitHub connections.
+-- Legacy server-managed metadata fields and encrypted GitHub connections.
+-- Code Collaborator no longer uses Supabase Auth; identities are guest UUIDs.
 alter table public.profiles add column if not exists bio text;
 do $$ begin
   if not exists (select 1 from pg_constraint where conname = 'profiles_bio_length') then
@@ -10,7 +11,7 @@ create unique index if not exists profiles_username_lower_unique
   on public.profiles (lower(username)) where username is not null;
 
 create table if not exists public.github_connections (
-  user_id uuid primary key references auth.users(id) on delete cascade,
+  user_id uuid primary key,
   github_id text not null unique,
   github_login text not null,
   avatar_url text,

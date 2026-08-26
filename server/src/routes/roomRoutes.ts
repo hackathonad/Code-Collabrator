@@ -128,9 +128,10 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
       avatarUrl: identity.avatarUrl
     });
 
-    await Promise.all([
-      roomPersistence.saveRoom(joined.room)
-    ]);
+    // Joining is served from authoritative in-memory state. Persistence is a
+    // best-effort durability update and must not make an active room depend on
+    // Supabase availability.
+    void roomPersistence.saveRoom(joined.room);
 
     response.json({
       ok: true,
@@ -247,7 +248,7 @@ router.post("/:roomId/history/:historyId/restore", guestSession, async (request,
       return;
     }
     const restored = roomStore.restoreHistoryEntry(roomId, userId, String(request.params.historyId ?? ""));
-    await roomPersistence.saveRoom(restored.room);
+    void roomPersistence.saveRoom(restored.room);
     response.json({ ok: true, ...restored });
   } catch (error) {
     sendError(response, roomErrorStatus(error, 403), error instanceof Error ? error.message : "Unable to restore room history");
@@ -275,12 +276,14 @@ router.delete("/:roomId", guestSession, async (request, response) => {
       sendError(response, 403, "Only the owner can delete the room");
       return;
     }
+    // Invalidate the live room before touching the optional database. A
+    // persistence outage must never leave a deleted room usable in memory.
+    roomStore.deleteRoom(roomId, userId);
     const persisted = await roomPersistence.deleteRoom(roomId);
     if (!persisted) {
-      sendError(response, 503, "Room persistence is unavailable. The room was not deleted.");
+      sendError(response, 503, "The room was deleted from active memory, but durable persistence could not be updated.");
       return;
     }
-    roomStore.deleteRoom(roomId, userId);
     response.status(204).send();
   } catch (error) {
     sendError(response, roomErrorStatus(error, 403), error instanceof Error ? error.message : "Unable to delete room");
