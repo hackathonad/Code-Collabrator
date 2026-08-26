@@ -3,6 +3,18 @@ import type { AIProviderId, AISettings } from "./ai";
 export type AgentMode = "ASK" | "EDIT" | "DEBUG" | "EXPLAIN";
 export type AgentToolName = "READ_FILE" | "LIST_FILES" | "SEARCH_CODE" | "GET_CURRENT_FILE" | "GET_SELECTION" | "GET_WORKSPACE_SUMMARY" | "GET_DIAGNOSTICS" | "APPLY_PATCH" | "RUN_VALIDATION";
 export type ValidationCategory = "typecheck" | "lint" | "tests" | "build";
+export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
+
+export interface AgentDiagnostic {
+  fileId?: string;
+  path?: string;
+  message: string;
+  severity: "error" | "warning" | "info" | "hint";
+  startLine?: number;
+  startColumn?: number;
+  endLine?: number;
+  endColumn?: number;
+}
 
 export interface AgentPatch {
   patchId: string;
@@ -10,12 +22,27 @@ export interface AgentPatch {
   workspaceId: string;
   fileId: string;
   path: string;
+  baseVersion: number;
   expectedContent: string;
   replacement: string;
   additions: number;
   deletions: number;
   preview: string;
   applied: boolean;
+  status: AgentProposalStatus;
+}
+
+export interface AgentProposalEvent {
+  type: "proposal_created" | "proposal_approved" | "proposal_rejected" | "proposal_stale" | "proposal_applied";
+  roomId: string;
+  userId: string;
+  patchId: string;
+  fileId: string;
+  path: string;
+  baseVersion: number;
+  currentVersion?: number;
+  additions: number;
+  deletions: number;
 }
 
 export type AgentEvent =
@@ -41,6 +68,7 @@ export interface AgentRequestPayload {
   selectionStartOffset?: number;
   selectionEndOffset?: number;
   relevantFiles?: string[];
+  diagnostics?: AgentDiagnostic[];
   conversation: Array<{ role: "user" | "assistant"; content: string }>;
   settings: AISettings;
   execution?: { output: string; failed: boolean };

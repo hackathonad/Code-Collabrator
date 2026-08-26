@@ -16,6 +16,7 @@ import type {
   UserIdentityKind
 } from "./roomTypes";
 import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, updateWorkspaceFileContent } from "./workspaceService";
+import { markAgentProposalsStale } from "../agent/agentEvents";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
@@ -333,6 +334,7 @@ export const roomStore = {
     room.workspace.activeFileId = file.id;
     syncLegacyEditorProjection(room);
     room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
     participant.editsCount += 1;
     touchParticipantActivity(participant, room);
     const historyEntry = maybeAddAutosaveEntry(room, participant);
@@ -364,6 +366,7 @@ export const roomStore = {
     activeFile.updatedByUserId = userId;
     syncLegacyEditorProjection(room);
     room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
     touchParticipantActivity(participant, room);
     const historyEntry = addHistoryEntry(room, participant, "language-change");
     return {
@@ -468,6 +471,7 @@ export const roomStore = {
     }
     syncLegacyEditorProjection(room);
     room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
     room.updatedAt = Date.now();
 
     for (const participant of Object.values(room.participants)) {
@@ -515,6 +519,7 @@ export const roomStore = {
     }
     syncLegacyEditorProjection(room);
     room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
     touchParticipantActivity(participant, room);
     const historyEntry = addHistoryEntry(room, participant, "restore");
 
@@ -548,6 +553,7 @@ export const roomStore = {
     const activeFile = applyWorkspaceOperation(room.workspace, operation, userId);
     syncLegacyEditorProjection(room);
     room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
     touchParticipantActivity(participant, room);
     room.appliedWorkspaceOperationIds = [...room.appliedWorkspaceOperationIds, operation.id].slice(-250);
     addHistoryEntry(room, participant, "checkpoint", { workspaceOperation: operation.type, fileId: activeFile?.id, code: room.code, language: room.language });

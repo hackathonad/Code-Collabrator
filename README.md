@@ -149,9 +149,11 @@ The AI panel uses one guest-authorized agent runtime for Ask, Edit, Debug, and E
 
 The initial tool registry is deliberately narrow: `READ_FILE`, `LIST_FILES`, `SEARCH_CODE`, `GET_CURRENT_FILE`, `GET_SELECTION`, `GET_WORKSPACE_SUMMARY`, `GET_DIAGNOSTICS`, `APPLY_PATCH`, and `RUN_VALIDATION`. Tools read the authoritative in-memory room workspace; they do not access the host filesystem. Paths are workspace-relative and reject traversal, absolute paths, ignored directories, and common secret files/content.
 
-Edit and Debug modes can return exact patch proposals. A proposal contains the file path, expected old content, replacement, line-change summary, and a stable patch ID. Applying it requires a separate user action and the server rechecks the room session, workspace, file path, patch identity, and exact single content match. Approved changes flow through `roomStore`, persistence, and Socket.IO synchronization.
+Edit and Debug modes can return exact patch proposals. A proposal contains the file path, expected old content, replacement, base editor version, line-change summary, and a stable patch ID. Applying it requires a separate user action and the server rechecks the room session, workspace, file path, patch identity, base version, and exact single content match. Any collaborator or workspace edit advances the version and marks pending proposals stale; the server never silently overwrites newer room state. Proposal-created, approved, rejected, stale, and applied lifecycle events are shared without private provider details or hidden reasoning. Approved changes flow through `roomStore`, persistence, and Socket.IO synchronization.
 
 Validation is category-only (`typecheck`, `lint`, `tests`, or `build`) with fixed npm commands, `shell: false`, bounded output, a 30-second timeout, and a credential-sanitized child environment. The agent has no unrestricted shell, arbitrary command, browser, or operating-system file tool. Cancellation is propagated from the browser and the runtime has a 90-second overall deadline.
+
+Monaco editor diagnostics are forwarded as bounded, structured, untrusted evidence with file and location metadata. If the external Programiz runner is opened, its stdout, stderr, timing, and exit code remain unavailable to the application; the agent is told that no execution result was provided rather than being given a fabricated result.
 
 ## Code execution workflow
 

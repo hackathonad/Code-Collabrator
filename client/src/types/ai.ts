@@ -13,4 +13,4 @@ export interface AISelection { fileId: string; code: string; startOffset: number
 export interface AIUsageMetadata { promptTokens?: number; completionTokens?: number; totalTokens?: number; }
 export interface AICompletionResult { content: string; provider: AIProviderId; model: string; finishReason?: string; usage?: AIUsageMetadata; }
 export interface AIStreamEvent { type: "delta" | "complete" | "error"; content?: string; result?: AICompletionResult; message?: string; code?: string; }
-export interface AIRequestContext { roomId: string; workspaceId: string; currentFileId: string; guestToken?: string; selection?: AISelection | null; execution?: { output: string; failed: boolean }; }
+export interface AIRequestContext { roomId: string; workspaceId: string; currentFileId: string; guestToken?: string; selection?: AISelection | null; execution?: { output: string; failed: boolean }; diagnostics?: import("./agent").AgentDiagnostic[]; }

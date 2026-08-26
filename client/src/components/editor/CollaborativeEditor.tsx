@@ -8,6 +8,7 @@ import { useTheme } from "../../context/ThemeContext";
 import { useRoomStore } from "../../store/useRoomStore";
 import type { Participant, TypingParticipant, UserSession } from "../../types/collaboration";
 import type { AIAction } from "../../types/ai";
+import type { AgentDiagnostic } from "../../types/agent";
 import { EditorToolbar } from "./EditorToolbar";
 import { configureMonaco } from "./monacoSetup";
 
@@ -24,6 +25,7 @@ interface CollaborativeEditorProps {
   onChangeLanguage: (language: "javascript" | "python" | "cpp") => void;
   isPaused: boolean;
   onSelectionChange?: (selection: { fileId: string; code: string; startOffset: number; endOffset: number } | null) => void;
+  onDiagnosticsChange?: (diagnostics: AgentDiagnostic[]) => void;
   onOpenAIAssistant?: (action?: AIAction) => void;
   onEditorAIReady?: (actions: { insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean }) => void;
 }
@@ -47,11 +49,13 @@ export const CollaborativeEditor = ({
   onChangeLanguage,
   isPaused,
   onSelectionChange,
+  onDiagnosticsChange,
   onOpenAIAssistant,
   onEditorAIReady
 }: CollaborativeEditorProps) => {
   const editorRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
+  const fileIdRef = useRef(fileId);
   const ignoreSyncRef = useRef(false);
   const debounceRef = useRef<number | null>(null);
   const cursorDebounceRef = useRef<number | null>(null);
@@ -63,6 +67,10 @@ export const CollaborativeEditor = ({
   const [hasSelection, setHasSelection] = useState(false);
   const { setCode } = useRoomStore();
   const { editorColorMode } = useTheme();
+
+  useEffect(() => {
+    fileIdRef.current = fileId;
+  }, [fileId]);
 
   const currentUser = participants.find((participant) => participant.userId === session.userId);
   const canEdit = Boolean(currentUser) && !isPaused;
@@ -96,6 +104,19 @@ export const CollaborativeEditor = ({
 
     configureMonaco(monaco);
     monaco.editor.setTheme(editorColorMode === "light" ? "code-sphere-light" : "code-sphere-dark");
+    const updateDiagnostics = () => {
+      const model = editor.getModel();
+      const diagnostics = model ? monaco.editor.getModelMarkers({ resource: model.uri }).slice(0, 50).map((marker) => ({
+        fileId: fileIdRef.current,
+        message: marker.message.slice(0, 600),
+        severity: marker.severity === 8 ? "error" : marker.severity === 4 ? "warning" : marker.severity === 2 ? "info" : "hint",
+        startLine: marker.startLineNumber,
+        startColumn: marker.startColumn,
+        endLine: marker.endLineNumber,
+        endColumn: marker.endColumn
+      } satisfies AgentDiagnostic)) : [];
+      onDiagnosticsChange?.(diagnostics);
+    };
     onEditorAIReady?.({
       insertAtCursor: (nextCode) => {
         const model = editor.getModel(); const position = editor.getPosition();
@@ -105,7 +126,7 @@ export const CollaborativeEditor = ({
       },
       replaceSelection: (selection, nextCode) => {
         const model = editor.getModel();
-        if (!model || selection.fileId !== fileId) return false;
+        if (!model || selection.fileId !== fileIdRef.current) return false;
         const start = model.getPositionAt(selection.startOffset); const end = model.getPositionAt(selection.endOffset); const range = new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column);
         if (model.getValueInRange(range) !== selection.code) return false;
         editor.executeEdits("ai-assistant", [{ range, text: nextCode, forceMoveMarkers: true }]); editor.focus(); return true;
@@ -118,6 +139,8 @@ export const CollaborativeEditor = ({
 
     disposablesRef.current.forEach((disposable) => disposable.dispose());
     disposablesRef.current = [];
+    disposablesRef.current.push(monaco.editor.onDidChangeMarkers(() => updateDiagnostics()));
+    updateDiagnostics();
 
     disposablesRef.current.push(editor.onDidChangeModelContent(() => {
       if (ignoreSyncRef.current) {
@@ -125,7 +148,7 @@ export const CollaborativeEditor = ({
       }
 
       const value = editor.getValue();
-      setCode(value, undefined, fileId);
+      setCode(value, undefined, fileIdRef.current);
       emitEditorTyping(true);
 
       if (debounceRef.current) {
@@ -137,7 +160,7 @@ export const CollaborativeEditor = ({
           roomId,
           userId: session.userId,
           code: value,
-          fileId
+          fileId: fileIdRef.current
         });
       }, 70);
     }));
@@ -148,12 +171,12 @@ export const CollaborativeEditor = ({
       const code = model.getValueInRange(event.selection);
       const startOffset = model.getOffsetAt(event.selection.getStartPosition());
       const endOffset = model.getOffsetAt(event.selection.getEndPosition());
-      const signature = fileId + ":" + startOffset + ":" + endOffset;
+      const signature = fileIdRef.current + ":" + startOffset + ":" + endOffset;
       if (lastSelectionRef.current === signature) return;
       lastSelectionRef.current = signature;
       const selected = Boolean(code.trim());
       setHasSelection(selected);
-      onSelectionChange?.(selected ? { fileId, code, startOffset, endOffset } : null);
+      onSelectionChange?.(selected ? { fileId: fileIdRef.current, code, startOffset, endOffset } : null);
     }));
 
     disposablesRef.current.push(editor.onDidChangeCursorPosition((event) => {
@@ -295,6 +318,20 @@ export const CollaborativeEditor = ({
 
     decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, nextDecorations);
   }, [code, remoteParticipants, visibleTypingUsers]);
+
+  useEffect(() => {
+    const model = editorRef.current?.getModel();
+    if (!model || !monacoRef.current) return;
+    onDiagnosticsChange?.(monacoRef.current.editor.getModelMarkers({ resource: model.uri }).slice(0, 50).map((marker) => ({
+      fileId,
+      message: marker.message.slice(0, 600),
+      severity: marker.severity === 8 ? "error" : marker.severity === 4 ? "warning" : marker.severity === 2 ? "info" : "hint",
+      startLine: marker.startLineNumber,
+      startColumn: marker.startColumn,
+      endLine: marker.endLineNumber,
+      endColumn: marker.endColumn
+    } satisfies AgentDiagnostic)));
+  }, [code, fileId, language, onDiagnosticsChange]);
 
   return (
     <div className="theme-editor-shell relative flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-[var(--border)] shadow-[var(--shadow-soft)]">

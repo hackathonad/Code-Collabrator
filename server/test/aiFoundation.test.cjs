@@ -218,12 +218,15 @@ test("AI context remains bounded and excludes sensitive workspace files", () => 
   active.content = "x".repeat(20_000);
   snapshot.workspace.files["sensitive"] = { ...active, id: "sensitive", name: ".env", content: "API_KEY=never-send-this", parentId: snapshot.workspace.rootFolderId };
   snapshot.workspace.openFileIds.push("sensitive");
+  snapshot.workspace.files["safe-named-secret"] = { ...active, id: "safe-named-secret", name: "notes.txt", content: "OPENAI_API_KEY=never-send-this-either", parentId: snapshot.workspace.rootFolderId };
+  snapshot.workspace.openFileIds.push("safe-named-secret");
   const input = { action: "explain", prompt: "Explain the current file", currentFileId: active.id, selectedCode: "y".repeat(12_000), conversation: [], settings: { ...request().settings, workspaceContextSize: "minimal" } };
   const context = buildAIContext(snapshot, input, null);
   assert.ok(context.characterCount <= 8_000, `context must fit the minimal budget (was ${context.characterCount})`);
   assert.ok(context.selectedCode.length < 12_000);
   assert.ok(!context.workspaceSummary.includes(".env"));
   assert.ok(!context.openFiles.some((file) => file.name === ".env"));
+  assert.ok(!context.openFiles.some((file) => file.name === "notes.txt"));
 });
 
 test("AI context rejects a selection that belongs to another active file", () => {

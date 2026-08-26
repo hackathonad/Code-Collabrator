@@ -35,7 +35,7 @@ The current client intentionally does not read `VITE_SUPABASE_URL` or `VITE_SUPA
 
 ## Coding-agent runtime
 
-The agent is enabled by the existing AI provider configuration; it does not require a new environment variable. Requests run on the backend against the authoritative guest-authorized room workspace. The runtime supports Ask, Edit, Debug, and Explain modes, nine bounded virtual-workspace tools, streamed activity events, and approval-gated exact patches. It never uses Supabase Auth or browser Supabase credentials.
+The agent is enabled by the existing AI provider configuration; it does not require a new environment variable. Requests run on the backend against the authoritative guest-authorized room workspace and include a bounded room/editor snapshot, structured Monaco diagnostics when available, and only a small recent collaboration context. The runtime supports Ask, Edit, Debug, and Explain modes, nine bounded virtual-workspace tools, streamed activity events, and approval-gated exact patches. Proposals are tied to a base editor version and become stale after any intervening room edit. It never uses Supabase Auth or browser Supabase credentials.
 
 Validation tools use fixed npm categories (`typecheck`, `lint`, `tests`, `build`), `shell: false`, bounded output, and a 30-second limit. The child process environment removes variables whose names indicate API keys, secrets, tokens, passwords, Supabase, or guest-session credentials. Do not add provider credentials to client variables or include secrets in workspace files.
 

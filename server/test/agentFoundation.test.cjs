@@ -5,6 +5,9 @@ const { roomStore } = require("../dist/modules/rooms/roomStore");
 const { createAgentToolRegistry } = require("../dist/modules/agent/agentToolRegistry");
 const { executeAgent, parseAgentAction, AGENT_MAX_ITERATIONS } = require("../dist/modules/agent/agentRuntime");
 const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
+const { buildAIContext, AI_CONTEXT_BUDGETS } = require("../dist/modules/ai/contextEngine");
+const { createAgentUserMessage } = require("../dist/modules/agent/agentPrompt");
+const { registerAgentProposal, subscribeAgentProposal, updateAgentProposal } = require("../dist/modules/agent/agentEvents");
 
 const settings = { provider: "custom", model: "test-model", temperature: 0, maxTokens: 256, streaming: false, workspaceContextSize: "minimal" };
 const createFixture = () => {
@@ -26,6 +29,38 @@ const createFixture = () => {
 };
 
 const toolsFor = (fixture, allowPatchApplication = false, validationRunner) => createAgentToolRegistry({ room: fixture.room, request: fixture.request, allowPatchApplication, validationRunner });
+
+test("room context includes bounded diagnostics and trusted metadata without flooding history", () => {
+  const fixture = createFixture();
+  const context = buildAIContext(fixture.room, {
+    action: "fix",
+    prompt: "Explain this diagnostic",
+    currentFileId: fixture.request.currentFileId,
+    conversation: [],
+    settings,
+    diagnostics: [{ fileId: fixture.request.currentFileId, message: "Unexpected token", severity: "error", startLine: 2, startColumn: 4 }]
+  }, null);
+  assert.equal(context.roomId, fixture.room.roomId);
+  assert.equal(context.workspaceId, fixture.room.workspace.id);
+  assert.equal(context.editorVersion, fixture.room.version);
+  assert.equal(context.diagnostics[0].message, "Unexpected token");
+  assert.ok(context.characterCount <= AI_CONTEXT_BUDGETS.minimal);
+  const message = createAgentUserMessage(fixture.request, context).content;
+  assert.match(message, /<trusted-room-metadata>/);
+  assert.match(message, /<untrusted-room-content>/);
+  assert.doesNotMatch(message, /Recent room chat/);
+});
+
+test("runtime rejects a request carrying another room or participant context", async () => {
+  const fixture = createFixture();
+  const other = createFixture();
+  const fakeAI = {
+    getProviders: () => [{ id: "custom", supportsStreaming: false }],
+    complete: async () => ({ provider: "custom", model: "test-model", content: '{"type":"final","text":"should not run"}' }),
+    stream: () => { throw new Error("stream should not be used"); }
+  };
+  await assert.rejects(() => executeAgent({ ...fixture.request, roomId: other.room.roomId }, fixture.room, undefined, { aiService: fakeAI, repository: null }), /not authorized/);
+});
 
 test("agent protocol accepts only the documented action shapes", () => {
   assert.deepEqual(parseAgentAction('{"type":"tool_call","tool":"LIST_FILES","arguments":{}}'), { type: "tool_call", tool: "LIST_FILES", arguments: {} });
@@ -86,6 +121,48 @@ test("patches require one stable match and produce a proposal before application
   assert.equal(mismatch.ok, false);
   const ambiguous = await toolsFor(fixture).run("APPLY_PATCH", { path, expectedContent: "\n", replacement: "\n" });
   assert.equal(ambiguous.ok, false);
+});
+
+test("base editor versions prevent overwriting a collaborator edit and emit stale lifecycle events", async () => {
+  const fixture = createFixture();
+  const file = fixture.room.workspace.files[fixture.room.workspace.activeFileId];
+  const path = workspacePathForFile(fixture.room.workspace, file);
+  const proposal = await toolsFor(fixture).run("APPLY_PATCH", { path, expectedContent: file.content, replacement: `${file.content}\n// agent proposal` });
+  assert.equal(proposal.ok, true);
+  const events = [];
+  const unsubscribe = subscribeAgentProposal((event) => events.push(event));
+  registerAgentProposal(proposal.patch, fixture.request.userId);
+  const collaborator = roomStore.updateCode(fixture.room.roomId, fixture.request.userId, `${file.content}\n// collaborator edit`, file.id);
+  const applied = await createAgentToolRegistry({ room: fixture.room, request: fixture.request, allowPatchApplication: true }).run("APPLY_PATCH", proposal.patch);
+  unsubscribe();
+  assert.equal(applied.ok, false);
+  assert.match(applied.summary, /room changed/);
+  assert.ok(events.some((event) => event.type === "proposal_stale" && event.currentVersion === collaborator.room.version));
+  assert.match(roomStore.getRoomSnapshot(fixture.room.roomId).workspace.files[file.id].content, /collaborator edit/);
+});
+
+test("rejecting a registered proposal changes lifecycle state without changing room code", async () => {
+  const fixture = createFixture();
+  const file = fixture.room.workspace.files[fixture.room.workspace.activeFileId];
+  const path = workspacePathForFile(fixture.room.workspace, file);
+  const proposal = await toolsFor(fixture).run("APPLY_PATCH", { path, expectedContent: file.content, replacement: `${file.content}\n// rejected` });
+  const before = roomStore.getRoomSnapshot(fixture.room.roomId).workspace.files[file.id].content;
+  const events = [];
+  const unsubscribe = subscribeAgentProposal((event) => events.push(event));
+  registerAgentProposal(proposal.patch, fixture.request.userId);
+  updateAgentProposal(proposal.patch.patchId, "proposal_rejected");
+  unsubscribe();
+  const after = roomStore.getRoomSnapshot(fixture.room.roomId).workspace.files[file.id].content;
+  assert.equal(after, before);
+  assert.ok(events.some((event) => event.type === "proposal_rejected"));
+});
+
+test("diagnostics tool honestly reports missing diagnostics", async () => {
+  const fixture = createFixture();
+  const result = await toolsFor(fixture).run("GET_DIAGNOSTICS", {});
+  assert.equal(result.ok, true);
+  assert.match(result.summary, /No editor diagnostics/);
+  assert.deepEqual(result.data.diagnostics, []);
 });
 
 test("approved patches apply through roomStore and never accept a model apply flag", async () => {

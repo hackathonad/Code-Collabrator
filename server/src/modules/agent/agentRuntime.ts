@@ -29,7 +29,7 @@ const MAX_FINAL_TEXT = 12_000;
 const MAX_INTERNAL_RESULT = 24_000;
 
 export class AgentRuntimeError extends Error {
-  constructor(public readonly code: "TIMEOUT" | "CANCELLED" | "INVALID_MODEL_OUTPUT", message: string) {
+  constructor(public readonly code: "TIMEOUT" | "CANCELLED" | "INVALID_MODEL_OUTPUT" | "UNAUTHORIZED_CONTEXT", message: string) {
     super(message);
     this.name = "AgentRuntimeError";
   }
@@ -90,7 +90,8 @@ const createContextInput = (request: AgentRequest): AIRequestInput => ({
   selectedCodeFileId: request.selection?.fileId,
   conversation: request.conversation,
   settings: request.settings,
-  execution: request.execution
+  execution: request.execution,
+  diagnostics: request.diagnostics
 });
 
 const collectCompletion = async (service: AIService, request: AgentRequest, signal: AbortSignal): Promise<AICompletionResult> => {
@@ -156,6 +157,9 @@ export const executeAgent = async (
   };
   const emitStatus = (message: string) => emit({ type: "status", message });
   try {
+    if (request.roomId !== room.roomId || request.workspaceId !== room.workspace.id || !room.participants.some((participant) => participant.userId === request.userId)) {
+      throw new AgentRuntimeError("UNAUTHORIZED_CONTEXT", "The agent context is not authorized for this room");
+    }
     if (signal?.aborted) throw new AgentRuntimeError("CANCELLED", "Agent generation was cancelled");
     const repository = dependencies.repository === undefined ? await runWithinDeadline(() => gitService.getSummary(room.workspace).catch(() => null)) : dependencies.repository;
     const context = buildAIContext(room, createContextInput(request), repository ?? null);

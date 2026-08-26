@@ -330,5 +330,14 @@ export const api = {
       body: JSON.stringify({ guestToken, patch })
     });
     return await readJson<{ ok: true; patch: AgentPatch; room: RoomSnapshot }>(response);
+  },
+
+  async rejectAgentPatch(roomId: string, guestToken: string | undefined, patchId: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/proposal`), {
+      method: "POST",
+      headers: jsonHeaders(),
+      body: JSON.stringify({ guestToken, action: "reject", patchId })
+    });
+    return await readJson<{ ok: true; patchId: string; status: "rejected" }>(response);
   }
 };

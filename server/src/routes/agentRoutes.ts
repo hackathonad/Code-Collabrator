@@ -3,10 +3,10 @@ import { guestSession, verifyGuestSessionToken, type GuestRequest } from "../mid
 import { aiService } from "../modules/ai/aiService";
 import { AIProviderRequestError, AIProviderUnavailableError, type AIChatMessage, type AIProviderId, type AISettings } from "../modules/ai/aiTypes";
 import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
-import { emitAgentWorkspaceChange } from "../modules/agent/agentEvents";
+import { emitAgentWorkspaceChange, getAgentProposal, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import type { AgentMode, AgentPatch, AgentRequest } from "../modules/agent/agentTypes";
+import type { AgentDiagnostic, AgentMode, AgentPatch, AgentRequest } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
@@ -53,6 +53,22 @@ const parseConversation = (value: unknown): AIChatMessage[] => !Array.isArray(va
   return content ? [{ role: entry.role, content }] : [];
 });
 
+const parseDiagnostics = (value: unknown): AgentDiagnostic[] => !Array.isArray(value) ? [] : value.slice(0, 50).flatMap((entry) => {
+  if (!isRecord(entry) || typeof entry.message !== "string" || !entry.message.trim()) return [];
+  const severity = entry.severity === "error" || entry.severity === "warning" || entry.severity === "info" || entry.severity === "hint" ? entry.severity : "info";
+  const numberValue = (key: string) => typeof entry[key] === "number" && Number.isInteger(entry[key]) ? Math.max(1, Math.min(1_000_000, entry[key] as number)) : undefined;
+  return [{
+    ...(typeof entry.fileId === "string" ? { fileId: entry.fileId.slice(0, 128) } : {}),
+    ...(typeof entry.path === "string" ? { path: entry.path.slice(0, 260) } : {}),
+    message: entry.message.trim().slice(0, 600),
+    severity,
+    ...(numberValue("startLine") === undefined ? {} : { startLine: numberValue("startLine") }),
+    ...(numberValue("startColumn") === undefined ? {} : { startColumn: numberValue("startColumn") }),
+    ...(numberValue("endLine") === undefined ? {} : { endLine: numberValue("endLine") }),
+    ...(numberValue("endColumn") === undefined ? {} : { endColumn: numberValue("endColumn") })
+  }];
+});
+
 const loadRoomIfNeeded = async (roomId: string) => {
   if (roomStore.hasRoom(roomId)) return true;
   const persisted = await roomPersistence.loadRoom(roomId);
@@ -93,6 +109,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
     relevantFiles: Array.isArray(body.relevantFiles) ? body.relevantFiles.filter((path): path is string => typeof path === "string").slice(0, 20).map((path) => path.slice(0, 260)) : [],
     conversation: parseConversation(body.conversation),
     execution,
+    diagnostics: parseDiagnostics(body.diagnostics),
     mode,
     language: activeFile?.language ?? room.language,
     settings,
@@ -103,7 +120,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
 
 const sendError = (response: Response, error: unknown) => {
   if (error instanceof AgentRouteError) { response.status(error.status).json({ ok: false, message: error.message, code: error.code }); return; }
-  if (error instanceof AgentRuntimeError) { response.status(error.code === "TIMEOUT" ? 504 : 499).json({ ok: false, message: error.message, code: error.code }); return; }
+  if (error instanceof AgentRuntimeError) { response.status(error.code === "TIMEOUT" ? 504 : error.code === "UNAUTHORIZED_CONTEXT" ? 403 : 499).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof AIProviderUnavailableError) { response.status(503).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof AIProviderRequestError) { response.status(error.code === "CONTEXT_TOO_LARGE" ? 413 : error.code === "RATE_LIMITED" ? 429 : 502).json({ ok: false, message: error.message, code: error.code }); return; }
   response.status(500).json({ ok: false, message: "Unable to complete the coding-agent request", code: "AGENT_ERROR" });
@@ -117,15 +134,29 @@ const approvedPatchFromBody = (body: Record<string, unknown>): AgentPatch & { su
     workspaceId: clip(raw.workspaceId, 128),
     fileId: clip(raw.fileId, 128),
     path: clip(raw.path, 260),
+    baseVersion: typeof raw.baseVersion === "number" && Number.isInteger(raw.baseVersion) ? raw.baseVersion : -1,
     expectedContent: typeof raw.expectedContent === "string" ? raw.expectedContent : typeof raw.expectedOldContent === "string" ? raw.expectedOldContent : "",
     replacement: typeof raw.replacement === "string" ? raw.replacement : "",
     additions: 0,
     deletions: 0,
     preview: "",
-    applied: false
+    applied: false,
+    status: "pending" as const
   };
-  if (!patch.path || patch.expectedContent === "" || typeof raw.replacement !== "string") throw new AgentRouteError(400, "An approved patch requires path, expectedContent, and replacement");
+  if (!patch.patchId || !patch.path || patch.baseVersion < 1 || patch.expectedContent === "" || typeof raw.replacement !== "string") throw new AgentRouteError(400, "An approved patch requires patchId, baseVersion, path, expectedContent, and replacement");
   return { ...patch, suppliedPatchId: patch.patchId || undefined };
+};
+
+const proposalMatches = (stored: AgentPatch, supplied: AgentPatch) => stored.roomId === supplied.roomId
+  && stored.workspaceId === supplied.workspaceId
+  && stored.fileId === supplied.fileId
+  && stored.path === supplied.path
+  && stored.baseVersion === supplied.baseVersion
+  && stored.expectedContent === supplied.expectedContent
+  && stored.replacement === supplied.replacement;
+
+const publishProposals = (userId: string, patches: AgentPatch[]) => {
+  patches.forEach((patch) => registerAgentProposal(patch, userId));
 };
 
 const patchAgentRequest = (room: ReturnType<typeof roomStore.getRoomSnapshot>, userId: string): AgentRequest => ({
@@ -148,6 +179,7 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
   try {
     const prepared = await prepareRequest(request as GuestRequest);
     const result = await executeAgent(prepared.agent, prepared.room, undefined, {}, controller.signal);
+    publishProposals(prepared.agent.userId, result.patches);
     response.json({ ok: true, result });
   } catch (error) { if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
   finally { request.off("close", abortRequest); }
@@ -166,6 +198,7 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
   response.once("close", abortIfDisconnected);
   try {
     await executeAgent(prepared.agent, prepared.room, (event) => {
+      if (event.type === "patch_proposal") registerAgentProposal(event.patch, prepared.agent.userId);
       if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify(event)}\n\n`);
     }, {}, controller.signal);
   } catch (error) {
@@ -189,20 +222,55 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     const patch = approvedPatchFromBody(body);
     if (patch.roomId && patch.roomId !== roomId) throw new AgentRouteError(409, "The patch belongs to another room", "PATCH_CONFLICT");
     if (patch.workspaceId && patch.workspaceId !== room.workspace.id) throw new AgentRouteError(409, "The patch belongs to another workspace", "PATCH_CONFLICT");
+    const stored = getAgentProposal(patch.patchId);
+    if (!stored || stored.userId !== userId || stored.patch.roomId !== roomId || !proposalMatches(stored.patch, patch)) throw new AgentRouteError(409, "The proposal is no longer available for this room session", "PATCH_CONFLICT");
+    if (stored.status === "proposal_stale" || patch.baseVersion !== room.version) {
+      updateAgentProposal(patch.patchId, "proposal_stale", room.version);
+      throw new AgentRouteError(409, "This proposal is stale because the room changed. Generate a new proposal.", "PATCH_STALE");
+    }
+    if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
     const common = { room, request: patchAgentRequest(room, userId), allowPatchApplication: false as const };
     const previewResult = await createAgentToolRegistry(common).run("APPLY_PATCH", patch);
     if (!previewResult.ok || !previewResult.patch) throw new AgentRouteError(409, previewResult.summary, "PATCH_CONFLICT");
-    if (patch.suppliedPatchId && patch.suppliedPatchId !== previewResult.patch.patchId) throw new AgentRouteError(409, "The patch identity does not match the current file", "PATCH_CONFLICT");
+    if (patch.suppliedPatchId !== previewResult.patch.patchId || patch.baseVersion !== previewResult.patch.baseVersion) throw new AgentRouteError(409, "The patch identity does not match the current file", "PATCH_CONFLICT");
     if (patch.fileId && patch.fileId !== previewResult.patch.fileId) throw new AgentRouteError(409, "The patch file does not match its path", "PATCH_CONFLICT");
+    updateAgentProposal(patch.patchId, "proposal_approved", room.version);
     const appliedResult = await createAgentToolRegistry({
       room,
       request: patchAgentRequest(room, userId),
       allowPatchApplication: true,
       onWorkspaceChanged: (snapshot, file, applied) => emitAgentWorkspaceChange({ roomId, userId, fileId: file.id, snapshot, patch: applied })
     }).run("APPLY_PATCH", patch);
-    if (!appliedResult.ok || !appliedResult.patch) throw new AgentRouteError(409, appliedResult.summary, "PATCH_CONFLICT");
+    if (!appliedResult.ok || !appliedResult.patch) {
+      const currentVersion = roomStore.getRoomSnapshot(roomId).version;
+      if (currentVersion !== patch.baseVersion) updateAgentProposal(patch.patchId, "proposal_stale", currentVersion);
+      throw new AgentRouteError(409, appliedResult.summary, currentVersion !== patch.baseVersion ? "PATCH_STALE" : "PATCH_CONFLICT");
+    }
     await roomPersistence.saveRoom(roomStore.getRoomSnapshot(roomId));
+    updateAgentProposal(patch.patchId, "proposal_applied", appliedResult.patch.baseVersion + 1);
     response.json({ ok: true, patch: appliedResult.patch, room: roomStore.getRoomSnapshot(roomId) });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/proposal", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const patchId = clip(body.patchId, 64);
+    if (!roomId || !userId || body.action !== "reject" || !patchId) throw new AgentRouteError(400, "A valid room session, patch ID, and reject action are required");
+    if (!rateLimit(`${roomId}:${userId}:proposal`)) throw new AgentRouteError(429, "Proposal update limit reached. Please wait a moment.", "RATE_LIMITED");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    const stored = getAgentProposal(patchId);
+    if (!stored || stored.patch.roomId !== roomId || stored.userId !== userId) throw new AgentRouteError(409, "The proposal is not available for this room session", "PATCH_CONFLICT");
+    if (stored.status === "proposal_rejected") {
+      response.json({ ok: true, status: "rejected", patchId });
+      return;
+    }
+    if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
+    updateAgentProposal(patchId, "proposal_rejected");
+    response.json({ ok: true, status: "rejected", patchId });
   } catch (error) { sendError(response, error); }
 });
 

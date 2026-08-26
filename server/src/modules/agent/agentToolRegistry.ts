@@ -126,15 +126,21 @@ const getWorkspaceSummary = (context: AgentToolContext): AgentToolResult => {
 };
 
 const getDiagnostics = (context: AgentToolContext): AgentToolResult => {
-  if (!context.request.execution?.output) return { ok: true, summary: "No server-side diagnostics or execution output is available", data: { diagnostics: [], note: "The browser runner does not expose diagnostics to the server." } };
-  return { ok: true, summary: context.request.execution.failed ? "Execution reported a failure" : "Execution output is available", data: { diagnostics: [{ severity: context.request.execution.failed ? "error" : "info", message: redacted(context.request.execution.output).slice(0, 6_000) }], failed: context.request.execution.failed } };
+  const diagnostics = context.request.diagnostics ?? [];
+  const execution = context.request.execution?.output ? { output: redacted(context.request.execution.output).slice(0, 6_000), failed: context.request.execution.failed } : undefined;
+  if (!diagnostics.length && !execution) return { ok: true, summary: "No editor diagnostics or execution output was provided", data: { diagnostics: [], note: "The external browser runner does not expose compiler or runtime diagnostics to the server." } };
+  return {
+    ok: true,
+    summary: diagnostics.length ? `${diagnostics.length} editor diagnostic(s) available${execution ? " and execution output is available" : ""}` : "Execution output is available; no editor diagnostics were provided",
+    data: { diagnostics, ...(execution ? { execution } : {}) }
+  };
 };
 
 const makePatch = (context: AgentToolContext, path: string, expectedContent: string, replacement: string, applied: boolean): AgentPatch => {
   const file = safeFileOrThrow(context, path);
   const stats = countLineChanges(expectedContent, replacement);
   const preview = `--- ${path}\n+++ ${path}\n- ${expectedContent.slice(0, 3_800).replace(/\n/g, "\n- ")}\n+ ${replacement.slice(0, 3_800).replace(/\n/g, "\n+ ")}`;
-  return { patchId: patchIdFor(context.room.roomId, file.id, expectedContent, replacement), roomId: context.room.roomId, workspaceId: context.room.workspace.id, fileId: file.id, path, expectedContent, replacement, ...stats, preview: clip(preview, 8_000), applied };
+  return { patchId: patchIdFor(context.room.roomId, file.id, expectedContent, replacement), roomId: context.room.roomId, workspaceId: context.room.workspace.id, fileId: file.id, path, baseVersion: context.room.version, expectedContent, replacement, ...stats, preview: clip(preview, 8_000), applied, status: applied ? "applied" : "pending" };
 };
 
 const applyPatch = (context: AgentToolContext, args: Record<string, unknown>): AgentToolResult => {
@@ -144,19 +150,23 @@ const applyPatch = (context: AgentToolContext, args: Record<string, unknown>): A
   if (rawPath === null || expectedContent === null || replacement === null) return { ok: false, summary: "APPLY_PATCH requires path, expectedContent, and replacement" };
   if (expectedContent.length > MAX_PATCH_PART || replacement.length > MAX_PATCH_PART) return { ok: false, summary: "The patch is larger than the allowed limit" };
   if (containsSensitiveContent(replacement)) return { ok: false, summary: "The patch appears to contain a secret and was blocked" };
+  const authoritativeRoom = context.allowPatchApplication ? roomStore.getRoomSnapshot(context.room.roomId) : context.room;
+  const authoritativeContext = authoritativeRoom === context.room ? context : { ...context, room: authoritativeRoom };
+  const suppliedBaseVersion = typeof args.baseVersion === "number" && Number.isInteger(args.baseVersion) ? args.baseVersion : context.room.version;
+  if (context.allowPatchApplication && suppliedBaseVersion !== authoritativeRoom.version) return { ok: false, summary: "Patch conflict: the room changed after this proposal was created" };
   const path = normalizeWorkspacePath(rawPath);
-  const file = safeFileOrThrow(context, path);
+  const file = safeFileOrThrow(authoritativeContext, path);
   if (!expectedContent) return { ok: false, summary: "An empty expectedContent is not a stable patch anchor" };
   const first = file.content.indexOf(expectedContent);
   const second = first < 0 ? -1 : file.content.indexOf(expectedContent, first + expectedContent.length);
   if (first < 0) return { ok: false, summary: `Patch conflict: expected content was not found in ${path}` };
   if (second >= 0) return { ok: false, summary: `Patch is ambiguous: expected content occurs more than once in ${path}` };
   const nextContent = `${file.content.slice(0, first)}${replacement}${file.content.slice(first + expectedContent.length)}`;
-  const proposed = makePatch(context, path, expectedContent, replacement, false);
+  const proposed = makePatch(authoritativeContext, path, expectedContent, replacement, false);
   if (!context.allowPatchApplication) return { ok: true, summary: `Prepared a patch proposal for ${path}`, patch: proposed, data: { patch: proposed } };
-  const result = roomStore.updateCode(context.room.roomId, context.request.userId, nextContent, file.id);
+  const result = roomStore.updateCode(authoritativeRoom.roomId, context.request.userId, nextContent, file.id);
   const updatedFile = result.room.workspace.files[file.id] ?? file;
-  const applied = { ...proposed, applied: true };
+  const applied = { ...proposed, applied: true, status: "applied" as const };
   context.onWorkspaceChanged?.(result.room, updatedFile, applied);
   return { ok: true, summary: `Applied the approved patch to ${path}`, patch: applied, data: { patch: applied, version: result.room.version } };
 };

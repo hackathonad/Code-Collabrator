@@ -3,7 +3,7 @@ import { roomStore } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
-import { subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
+import { subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import {
   isEditableRole,
   isRecord,
@@ -288,6 +288,11 @@ export const registerCollaborationSocket = (io: Server) => {
     });
   });
   agentSocketSubscriptions.add(unsubscribeAgentWorkspace);
+
+  const unsubscribeAgentProposal = subscribeAgentProposal((event) => {
+    io.to(event.roomId).emit("agent:proposal", event);
+  });
+  agentSocketSubscriptions.add(unsubscribeAgentProposal);
 
 
   const checkRateLimit = (socket: Socket) => {

@@ -1,6 +1,7 @@
 import type { RoomSnapshot, WorkspaceFile, WorkspaceState } from "../rooms/roomTypes";
 import type { RepositorySummary } from "../git/gitTypes";
 import type { AIChatMessage, AIContextPayload, AIRequestInput } from "./aiTypes";
+import { isSafeWorkspaceFile } from "../agent/agentSecurity";
 
 const SUMMARY_CACHE_TTL_MS = 15_000;
 const summaryCache = new Map<string, { expiresAt: number; value: string }>();
@@ -16,19 +17,44 @@ const pathForFolder = (workspace: WorkspaceState, folderId: string | null) => {
 };
 const filePath = (workspace: WorkspaceState, file: WorkspaceFile) => `${pathForFolder(workspace, file.parentId)}/${file.name}`.replace(/^\//, "");
 const isSensitive = (workspace: WorkspaceState, file: WorkspaceFile) => sensitiveName.test(filePath(workspace, file));
+const isSafeFile = (workspace: WorkspaceState, file: WorkspaceFile) => !isSensitive(workspace, file) && isSafeWorkspaceFile(workspace, file);
+const redactUntrustedText = (value: string) => value.replace(/(api[_-]?key|secret|password|token)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/gi, "[PRIVATE KEY REDACTED]");
+
+const boundedDiagnostics = (input: AIRequestInput["diagnostics"] = []) => {
+  const safe = input.slice(0, 50).flatMap((diagnostic) => {
+    if (!diagnostic || typeof diagnostic.message !== "string" || !diagnostic.message.trim()) return [];
+    const severity = diagnostic.severity === "error" || diagnostic.severity === "warning" || diagnostic.severity === "info" || diagnostic.severity === "hint" ? diagnostic.severity : "info";
+    return [{
+      ...(typeof diagnostic.fileId === "string" ? { fileId: diagnostic.fileId.slice(0, 128) } : {}),
+      ...(typeof diagnostic.path === "string" ? { path: diagnostic.path.slice(0, 260) } : {}),
+      message: redactUntrustedText(diagnostic.message.trim()).slice(0, 600),
+      severity,
+      ...(Number.isInteger(diagnostic.startLine) ? { startLine: Math.max(1, diagnostic.startLine as number) } : {}),
+      ...(Number.isInteger(diagnostic.startColumn) ? { startColumn: Math.max(1, diagnostic.startColumn as number) } : {}),
+      ...(Number.isInteger(diagnostic.endLine) ? { endLine: Math.max(1, diagnostic.endLine as number) } : {}),
+      ...(Number.isInteger(diagnostic.endColumn) ? { endColumn: Math.max(1, diagnostic.endColumn as number) } : {})
+    }];
+  });
+  const result: typeof safe = [];
+  for (const diagnostic of safe) {
+    if (JSON.stringify([...result, diagnostic]).length > 2_400) break;
+    result.push(diagnostic);
+  }
+  return result;
+};
 
 const compactWorkspaceSummary = (workspace: WorkspaceState) => {
   const cacheKey = `${workspace.id}:${workspace.updatedAt}`; const cached = summaryCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
   const folders = Object.values(workspace.folders).filter((folder) => !ignoredDirectory.test(folder.name)).slice(0, 40).map((folder) => `${pathForFolder(workspace, folder.id)}/`);
-  const files = Object.values(workspace.files).filter((file) => !isSensitive(workspace, file) && !filePath(workspace, file).split("/").some((part) => ignoredDirectory.test(part))).slice(0, 80).map((file) => filePath(workspace, file));
+  const files = Object.values(workspace.files).filter((file) => isSafeFile(workspace, file) && !filePath(workspace, file).split("/").some((part) => ignoredDirectory.test(part))).slice(0, 80).map((file) => filePath(workspace, file));
   const value = [`${Object.keys(workspace.folders).length} folders, ${Object.keys(workspace.files).length} files.`, ...folders, ...files].join("\n");
   summaryCache.set(cacheKey, { expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS, value }); return value;
 };
 
 const relevantOpenFiles = (workspace: WorkspaceState, input: AIRequestInput, currentFileId: string) => {
   const words = input.prompt.toLowerCase().match(/[a-z0-9_.-]{3,}/g) ?? [];
-  return workspace.openFileIds.filter((id) => id !== currentFileId).map((id) => workspace.files[id]).filter((file): file is WorkspaceFile => Boolean(file) && !isSensitive(workspace, file)).sort((left, right) => {
+  return workspace.openFileIds.filter((id) => id !== currentFileId).map((id) => workspace.files[id]).filter((file): file is WorkspaceFile => Boolean(file) && isSafeFile(workspace, file)).sort((left, right) => {
     const leftScore = words.some((word) => left.name.toLowerCase().includes(word)) ? 1 : 0;
     const rightScore = words.some((word) => right.name.toLowerCase().includes(word)) ? 1 : 0;
     return rightScore - leftScore;
@@ -45,11 +71,14 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
     const clipped = trimWithMarker(value, Math.min(preferredLimit, remaining)); remaining -= clipped.value.length; truncated ||= clipped.truncated; includedSections.push(section); return clipped.value;
   };
   const currentRaw = workspace.files[input.currentFileId ?? workspace.activeFileId] ?? workspace.files[workspace.activeFileId] ?? null;
-  const currentFile = currentRaw && !isSensitive(workspace, currentRaw) ? { id: currentRaw.id, name: currentRaw.name, language: currentRaw.language, content: "" } : null;
+  const currentFile = currentRaw && isSafeFile(workspace, currentRaw) ? { id: currentRaw.id, name: currentRaw.name, language: currentRaw.language, content: "" } : null;
   if (currentRaw && !currentFile) excludedSections.push(`sensitive current file: ${currentRaw.name}`);
   const selectionAllowed = Boolean(input.selectedCode?.trim()) && Boolean(currentFile) && (!input.selectedCodeFileId || input.selectedCodeFileId === currentFile?.id);
   const selectedCode = selectionAllowed ? include("selected code", input.selectedCode!.trim(), input.settings.workspaceContextSize === "extended" ? 10_000 : 6_000) || undefined : undefined;
   if (input.selectedCode?.trim() && !selectionAllowed) excludedSections.push(input.selectedCodeFileId && input.selectedCodeFileId !== currentFile?.id ? "selected code from a different file" : "selected code from sensitive file");
+  const diagnostics = boundedDiagnostics(input.diagnostics);
+  const diagnosticsText = include("editor diagnostics", diagnostics.length ? JSON.stringify(diagnostics) : "No editor diagnostics were provided.", 2_600);
+  const includedDiagnostics = diagnosticsText && !diagnosticsText.includes("[...truncated for context budget]") ? diagnostics : [];
   if (currentFile && currentRaw) currentFile.content = include(`current file: ${currentFile.name}`, currentRaw.content, input.settings.workspaceContextSize === "minimal" ? 3_000 : input.settings.workspaceContextSize === "extended" ? 14_000 : 7_000);
   const execution = input.execution?.output ? { output: include("execution output", input.execution.output, 5_000), failed: input.execution.failed } : undefined;
   const openFiles = relevantOpenFiles(workspace, input, currentFile?.id ?? "").slice(0, input.settings.workspaceContextSize === "extended" ? 4 : 2).flatMap((file) => {
@@ -58,11 +87,12 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   });
   const workspaceSummary = include("workspace structure", compactWorkspaceSummary(workspace), 3_500);
   const projectMetadata = include("project metadata", [`Open tabs: ${workspace.openFileIds.length}`, `Active file: ${currentFile?.name ?? "none"}`, repository?.repository ? `Repository: ${repository.repository.name} (${repository.repository.provider}), branch ${repository.repository.currentBranch ?? "unknown"}` : "Repository: local workspace", repository?.status.state === "changes" ? `Git changes: ${repository.status.entries.length}` : "Git status: no scanned changes"].join("\n"), 1_000);
+  const roomMetadata = include("room metadata", [`Editor version: ${room.version}`, `Participants: ${room.participants.length}`, `Online participants: ${room.participants.filter((participant) => participant.isOnline).length}`, `Active file path: ${currentRaw && currentFile ? filePath(workspace, currentRaw) : "none"}`].join("\n"), 800);
   const historyText = include("recent workspace history", room.history.slice(0, 5).map((entry) => `${entry.reason}: ${entry.createdByUsername} edited ${entry.fileId ?? "active file"}`).join("\n"), 700);
   const chatText = include("recent room chat", room.chat.slice(-4).map((message) => trimWithMarker(`${message.username}: ${message.message}`, 500).value).join("\n"), 1_200);
   const recentHistory = historyText ? historyText.split("\n") : [];
   const recentChat: AIChatMessage[] = chatText ? chatText.split("\n").map((content) => ({ role: "user", content })) : [];
-  const context: AIContextPayload = { workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, recentChat, recentHistory, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
+  const context: AIContextPayload = { roomId: room.roomId, workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, editorVersion: room.version, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, roomMetadata, recentChat, recentHistory, diagnostics: includedDiagnostics, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
   context.characterCount = JSON.stringify(context).length;
   // The 1,200-character envelope reserve above is intentionally conservative,
   // but keep the accounting value truthful if future metadata grows.

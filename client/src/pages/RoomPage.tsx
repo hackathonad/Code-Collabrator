@@ -25,7 +25,7 @@ import { useAIStore } from "../store/useAIStore";
 import { useMediaStore } from "../store/useMediaStore";
 import { useTheme } from "../context/ThemeContext";
 import type { RoomSnapshot, SupportedLanguage } from "../types/collaboration";
-import type { AgentPatch } from "../types/agent";
+import type { AgentDiagnostic, AgentPatch } from "../types/agent";
 
 type CollaborationPanel = "chat" | "ai" | "people" | "activity" | null;
 type ExecutionContext = { output: string; failed: boolean } | undefined;
@@ -44,6 +44,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [executionContext, setExecutionContext] = useState<ExecutionContext>(undefined);
+  const [diagnostics, setDiagnostics] = useState<AgentDiagnostic[]>([]);
   const editorAIActionsRef = useRef<{ insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean } | null>(null);
   const { room, session, connectionStatus, error, chatTypingUsers, editorTypingUsers, setRoom, setSession, setError } =
     useRoomStore();
@@ -142,14 +143,36 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       pushToast("Resume editing before applying an agent patch");
       return;
     }
+    if (patch.status !== "pending" || patch.baseVersion !== room.version) {
+      useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
+      pushToast("This proposal is stale. Generate a new patch.");
+      return;
+    }
+    if (room.workspace.files[patch.fileId]?.content !== patch.expectedContent) {
+      useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
+      pushToast("The file changed after this proposal. Generate a new patch.");
+      return;
+    }
     try {
       const result = await api.applyAgentPatch(room.roomId, session.guestToken, patch);
       storage.saveRoomSnapshot(result.room);
       setRoom(result.room);
-      useAIStore.getState().markAgentPatchApplied(patch.patchId);
+      useAIStore.getState().markAgentPatchStatus(patch.patchId, "applied");
       pushToast(`Applied agent patch to ${patch.path}`);
     } catch (issue) {
+      if (issue instanceof ApiRequestError && issue.code === "PATCH_STALE") useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
       pushToast(issue instanceof Error ? issue.message : "The patch could not be applied");
+    }
+  };
+
+  const rejectAgentPatch = async (patch: AgentPatch) => {
+    if (!session) return;
+    try {
+      await api.rejectAgentPatch(roomId, session.guestToken, patch.patchId);
+      useAIStore.getState().markAgentPatchStatus(patch.patchId, "rejected");
+      pushToast(`Rejected agent patch for ${patch.path}`);
+    } catch (issue) {
+      pushToast(issue instanceof Error ? issue.message : "The patch could not be rejected");
     }
   };
 
@@ -251,7 +274,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     }
 
     try {
-      setExecutionContext({ output: "Opening the external runner. Its execution output remains on that site.", failed: false });
+      setExecutionContext(undefined);
       await runCodeExternally({
         code: room.workspace.files[room.workspace.activeFileId]?.content ?? room.code,
         language: room.workspace.files[room.workspace.activeFileId]?.language ?? room.language
@@ -260,7 +283,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       return true;
     } catch (issue) {
       const message = issue instanceof Error ? issue.message : "Unable to open external runner";
-      setExecutionContext({ output: message, failed: true });
+      setExecutionContext(undefined);
       setError(message);
       pushToast("Unable to open external runner");
       return false;
@@ -475,6 +498,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             onChangeLanguage={changeLanguage}
             isPaused={room.isPaused}
             onSelectionChange={setAISelection}
+            onDiagnosticsChange={setDiagnostics}
             onOpenAIAssistant={(action) => { setAIAction(action ?? "custom"); setActivePanel("ai"); }}
             onEditorAIReady={(actions) => { editorAIActionsRef.current = actions; }}
             /></div>
@@ -501,14 +525,18 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
               roomId={room.roomId}
               workspaceId={room.workspace.id}
               currentFileId={room.workspace.activeFileId}
+              currentVersion={room.version}
+              fileContents={Object.fromEntries(Object.values(room.workspace.files).map((file) => [file.id, file.content]))}
               session={session}
               canInsert={!room.isPaused}
               execution={executionContext}
+              diagnostics={diagnostics}
               onClose={() => setActivePanel(null)}
                onInsertCode={insertAICode}
                onReplaceSelection={replaceAISelection}
                onReplaceFile={replaceAIFile}
                onApplyPatch={applyAgentPatch}
+               onRejectPatch={rejectAgentPatch}
              />
           ) : activePanel === "chat" ? (
             <ChatPanel

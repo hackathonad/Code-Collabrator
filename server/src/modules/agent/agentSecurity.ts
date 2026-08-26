@@ -4,7 +4,7 @@ import type { WorkspaceFile, WorkspaceState } from "../rooms/roomTypes";
 const MAX_PATH_LENGTH = 260;
 const ignoredSegment = /^(?:node_modules|dist|build|coverage|\.git)$/i;
 const sensitiveSegment = /^(?:\.env(?:\..*)?|credentials(?:\..*)?|secrets?(?:\..*)?|id_rsa|.*\.(?:pem|key|p12|pfx))$/i;
-const sensitiveContent = /(-----BEGIN [A-Z ]+PRIVATE KEY-----|(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"]?[A-Za-z0-9_\-./+=]{12,}|(?:sk|ghp|github_pat|xox[baprs])-[_A-Za-z0-9-]{12,})/i;
+const sensitiveContent = /(-----BEGIN [A-Z ]+PRIVATE KEY-----|(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"]?[A-Za-z0-9_./+=-]{12,}|(?:sk|ghp|github_pat|xox[baprs])-[_A-Za-z0-9-]{12,}|(?:AIza|gsk_|xai-|github_pat_)[A-Za-z0-9_-]{20,})/i;
 
 export class AgentSecurityError extends Error {
   constructor(message: string) {

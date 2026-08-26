@@ -4,7 +4,9 @@ import { useNavigate } from "react-router-dom";
 import { storage } from "../lib/storage";
 import { useRoomStore } from "../store/useRoomStore";
 import { useMediaStore } from "../store/useMediaStore";
+import { useAIStore } from "../store/useAIStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
+import type { AgentProposalEvent } from "../types/agent";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.replace(/\/+$/, "") ?? "";
 
@@ -100,10 +102,12 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
         storage.saveRoomSnapshot(snapshot);
         setRoom(snapshot);
         replaceParticipants(snapshot.participants);
+        useAIStore.getState().markAgentPatchesStale(snapshot.version);
       });
 
       socket.on("workspace:sync", (payload: { workspace: import("../types/collaboration").WorkspaceState; code: string; language: SupportedLanguage; version: number; history: HistoryEntry[] }) => {
         syncWorkspace(payload.workspace, payload.code, payload.language, payload.version, payload.history);
+        useAIStore.getState().markAgentPatchesStale(payload.version);
       });
 
       socket.on("room:participants", (participants: Participant[]) => replaceParticipants(participants));
@@ -122,6 +126,12 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
 
       socket.on("editor:sync", (payload: { code: string; language: SupportedLanguage; version: number; fileId?: string }) => {
         syncEditor(payload.code, payload.language, payload.version, payload.fileId);
+        useAIStore.getState().markAgentPatchesStale(payload.version);
+      });
+
+      socket.on("agent:proposal", (event: AgentProposalEvent) => {
+        if (!event || event.roomId !== roomId) return;
+        useAIStore.getState().receiveAgentProposalEvent(event);
       });
 
       socket.on("room:deleted", () => {

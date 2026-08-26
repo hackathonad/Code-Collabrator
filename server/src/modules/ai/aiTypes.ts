@@ -46,13 +46,14 @@ export interface AIProviderDescriptor {
 export interface AISettings { provider: AIProviderId; model: string; temperature: number; maxTokens: number; streaming: boolean; systemPrompt?: string; workspaceContextSize: "minimal" | "standard" | "extended"; }
 export interface AIChatMessage { role: AIMessageRole; content: string; }
 export interface AIExecutionContext { output: string; failed: boolean; }
-export interface AIRequestInput { action: AIAction; prompt: string; currentFileId?: string; selectedCode?: string; selectedCodeFileId?: string; conversation: AIChatMessage[]; settings: AISettings; execution?: AIExecutionContext; }
+export interface AIEditorDiagnostic { fileId?: string; path?: string; message: string; severity: "error" | "warning" | "info" | "hint"; startLine?: number; startColumn?: number; endLine?: number; endColumn?: number; }
+export interface AIRequestInput { action: AIAction; prompt: string; currentFileId?: string; selectedCode?: string; selectedCodeFileId?: string; conversation: AIChatMessage[]; settings: AISettings; execution?: AIExecutionContext; diagnostics?: AIEditorDiagnostic[]; }
 export interface AIContextPayload {
-  workspaceId: string; workspaceName: string; language: SupportedLanguage;
+  roomId: string; workspaceId: string; workspaceName: string; language: SupportedLanguage; editorVersion: number;
   currentFile: { id: string; name: string; language: SupportedLanguage; content: string } | null;
   selectedCode?: string;
   openFiles: Array<{ id: string; name: string; language: SupportedLanguage; content: string }>;
-  workspaceSummary: string; projectMetadata: string; recentChat: AIChatMessage[]; recentHistory: string[];
+  workspaceSummary: string; projectMetadata: string; roomMetadata: string; recentChat: AIChatMessage[]; recentHistory: string[]; diagnostics: AIEditorDiagnostic[];
   execution?: AIExecutionContext; characterCount: number; estimatedTokens: number; includedSections: string[]; excludedSections: string[]; truncated: boolean;
 }
 export interface AICompletionRequest { messages: AIChatMessage[]; settings: AISettings; metadata: { workspaceId: string; action: AIAction; language: SupportedLanguage }; signal?: AbortSignal; }
