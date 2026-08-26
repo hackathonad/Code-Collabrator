@@ -5,6 +5,7 @@ import { isSafeWorkspaceFile } from "../agent/agentSecurity";
 import { buildProjectIndex, selectRelevantFiles } from "../agent/agentIntelligence";
 
 const SUMMARY_CACHE_TTL_MS = 15_000;
+const MAX_SUMMARY_CACHE_ENTRIES = 100;
 const summaryCache = new Map<string, { expiresAt: number; value: string }>();
 const ignoredDirectory = /^(node_modules|dist|build|coverage|\.git)$/i;
 const sensitiveName = /(^|\/)(\.env(?:\..*)?|.*\.(pem|key|p12|pfx)|id_rsa|credentials(?:\..*)?|secrets?(?:\..*)?)$/i;
@@ -50,7 +51,10 @@ const compactWorkspaceSummary = (workspace: WorkspaceState) => {
   const folders = Object.values(workspace.folders).filter((folder) => !ignoredDirectory.test(folder.name)).slice(0, 40).map((folder) => `${pathForFolder(workspace, folder.id)}/`);
   const files = Object.values(workspace.files).filter((file) => isSafeFile(workspace, file) && !filePath(workspace, file).split("/").some((part) => ignoredDirectory.test(part))).slice(0, 80).map((file) => filePath(workspace, file));
   const value = [`${Object.keys(workspace.folders).length} folders, ${Object.keys(workspace.files).length} files.`, ...folders, ...files].join("\n");
-  summaryCache.set(cacheKey, { expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS, value }); return value;
+  summaryCache.delete(cacheKey);
+  summaryCache.set(cacheKey, { expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS, value });
+  while (summaryCache.size > MAX_SUMMARY_CACHE_ENTRIES) summaryCache.delete(summaryCache.keys().next().value as string);
+  return value;
 };
 
 export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, repository: RepositorySummary | null): AIContextPayload => {

@@ -17,6 +17,7 @@ const clip = (value: string) => value.length <= MAX_OUTPUT ? value : `${value.sl
 export const createValidationRunner = (options: { cwd?: string; timeoutMs?: number } = {}): ValidationRunner => async (category, signal) => {
   const command = VALIDATION_COMMANDS[category];
   if (!command) throw new Error("Validation category is not allowed");
+  if (signal?.aborted) return { category, ok: false, exitCode: null, timedOut: false, cancelled: true, stdout: "", stderr: "", durationMs: 0, summary: `${category} cancelled` };
   const executable = process.platform === "win32" ? process.execPath : command.command;
   const args = process.platform === "win32"
     ? [path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"), ...command.args]

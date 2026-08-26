@@ -3,7 +3,7 @@ import { roomStore } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
-import { subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
+import { getPublicAgentProposalHistory, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
 import {
   isEditableRole,
@@ -514,7 +514,8 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.join(payload.roomId);
         socketRoomBindings.set(socket.id, payload);
         socket.emit("room:snapshot", snapshot);
-        socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId, payload.userId));
+        socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId));
+        socket.emit("agent:proposal_history", getPublicAgentProposalHistory(payload.roomId));
         io.to(payload.roomId).emit("room:participants", snapshot.participants);
         void roomPersistence.saveRoom(snapshot);
       } catch (error) {

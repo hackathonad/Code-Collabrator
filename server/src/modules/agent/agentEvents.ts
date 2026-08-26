@@ -64,6 +64,15 @@ export const registerAgentProposal = (patch: AgentPatch, userId: string) => {
 
 export const getAgentProposal = (patchId: string) => proposals.get(patchId) ?? null;
 
+export const getPublicAgentProposalHistory = (roomId: string, limit = 40) => [...proposals.values()]
+  .filter((stored) => stored.patch.roomId === roomId)
+  .slice(-Math.min(40, Math.max(1, limit)))
+  .map((stored) => proposalEvent(stored.status, stored));
+
+export const clearAgentProposals = (roomId: string) => {
+  for (const [patchId, stored] of proposals) if (stored.patch.roomId === roomId) proposals.delete(patchId);
+};
+
 export const updateAgentProposal = (patchId: string, type: Exclude<AgentProposalEvent["type"], "proposal_created">, currentVersion?: number) => {
   const stored = proposals.get(patchId);
   if (!stored) return null;

@@ -139,6 +139,7 @@ export const updateWorkspaceFileContent = (workspace: WorkspaceState, fileId: st
   file.updatedAt = Date.now();
   file.updatedByUserId = actorId;
   workspace.updatedAt = file.updatedAt;
+  workspace.ai.contextVersion += 1;
   return file;
 };
 
@@ -232,5 +233,6 @@ export const applyWorkspaceOperation = (workspace: WorkspaceState, operation: Wo
     }
   }
   workspace.updatedAt = now;
+  workspace.ai.contextVersion += 1;
   return activeWorkspaceFile(workspace);
 };

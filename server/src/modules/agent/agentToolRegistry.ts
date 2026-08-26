@@ -12,7 +12,7 @@ import {
   workspacePathForFile
 } from "./agentSecurity";
 import { createValidationRunner } from "./validationRunner";
-import { buildProjectIndex, projectIndexForContext } from "./agentIntelligence";
+import { buildProjectIndex, projectIndexForContext, relatedFilesFor } from "./agentIntelligence";
 import { getAgentTaskHistory } from "./agentTaskHistory";
 import type {
   AgentPatch,
@@ -33,7 +33,7 @@ const MAX_PATCH_FILES = 10;
 const MAX_PATCH_TOTAL = 60_000;
 const toolNames: AgentToolName[] = [
   "READ_FILE", "LIST_FILES", "SEARCH_CODE", "GET_CURRENT_FILE", "GET_SELECTION",
-  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
+  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_RELATED_FILES", "GET_PACKAGE_INFO", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -135,8 +135,20 @@ const getProjectIndex = (context: AgentToolContext): AgentToolResult => {
   return { ok: true, summary: index.summary, data: { ...projectIndexForContext(index), workspaceId: index.workspaceId, version: index.version, generatedAt: index.generatedAt } };
 };
 
+const getRelatedFiles = (context: AgentToolContext, args: Record<string, unknown>): AgentToolResult => {
+  const target = typeof args.fileId === "string" ? args.fileId : typeof args.path === "string" ? args.path : context.request.currentFileId;
+  const index = buildProjectIndex(context.room);
+  const related = relatedFilesFor(index, target, integerArg(args, "limit", 12, 1, 20));
+  return { ok: true, summary: related.length ? `Found ${related.length} related workspace file(s)` : "No related workspace files were found", data: { target, files: related.map((entry) => ({ id: entry.file.id, path: entry.file.path, language: entry.file.language, size: entry.file.size, score: entry.score, reasons: entry.reasons, summary: entry.file.summary })) } };
+};
+
+const getPackageInfo = (context: AgentToolContext): AgentToolResult => {
+  const index = buildProjectIndex(context.room);
+  return { ok: true, summary: index.packageSummary, data: { packageManagers: index.packageManagers, scripts: index.scripts, dependencies: index.dependencies, entryPoints: index.entryPoints, relevantDirectories: index.relevantDirectories.slice(0, 40), summary: index.packageSummary } };
+};
+
 const getTaskHistory = (context: AgentToolContext): AgentToolResult => {
-  const history = getAgentTaskHistory(context.room.roomId, context.request.userId).map(({ taskId, roomId, conversationId, mode, intent, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, ...(conversationId ? { conversationId } : {}), mode, intent, summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
+  const history = getAgentTaskHistory(context.room.roomId).map(({ taskId, roomId, conversationId, mode, intent, classification, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, ...(conversationId ? { conversationId } : {}), mode, intent, ...(classification ? { classification } : {}), summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
   return { ok: true, summary: `Found ${history.length} recent coding-agent task(s)`, data: { tasks: history } };
 };
 
@@ -236,6 +248,8 @@ export const createAgentToolRegistry = (context: AgentToolContext): AgentToolReg
         case "GET_SELECTION": return getSelection(context);
         case "GET_WORKSPACE_SUMMARY": return getWorkspaceSummary(context);
         case "GET_PROJECT_INDEX": return getProjectIndex(context);
+        case "GET_RELATED_FILES": return getRelatedFiles(context, rawArgs);
+        case "GET_PACKAGE_INFO": return getPackageInfo(context);
         case "GET_TASK_HISTORY": return getTaskHistory(context);
         case "GET_DIAGNOSTICS": return getDiagnostics(context);
         case "APPLY_PATCH": return applyPatch(context, rawArgs);

@@ -303,7 +303,7 @@ export const api = {
       if (!value) return;
       let event: AgentEvent;
       try { event = JSON.parse(value) as AgentEvent; } catch { throw new Error("The coding agent returned malformed streaming data."); }
-      if (!event || !["status", "context", "plan", "tool_call", "tool_result", "patch_proposal", "patch_review", "review", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
+      if (!event || !["status", "context", "plan", "diagnosis", "tool_call", "tool_result", "patch_proposal", "patch_review", "review", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
       onEvent(event);
       if (event.type === "error") throw new ApiRequestError(event.code === "TIMEOUT" ? 504 : 502, event.message, event.code);
     };
@@ -345,6 +345,11 @@ export const api = {
     const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
     const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/history?${query.toString()}`));
     return (await readJson<{ ok: true; tasks: AgentTaskPublic[] }>(response)).tasks;
+  },
+
+  async cancelAgentTask(roomId: string, guestToken: string | undefined, taskId: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/cancel`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken }) });
+    return await readJson<{ ok: true; taskId: string; status: "cancelled" }>(response);
   },
 
   async validateAgent(roomId: string, guestToken: string | undefined, category: ValidationCategory, taskId?: string) {

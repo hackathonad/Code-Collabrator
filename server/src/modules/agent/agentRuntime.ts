@@ -12,8 +12,9 @@ import { gitService } from "../git/gitService";
 import type { RoomSnapshot } from "../rooms/roomTypes";
 import { createAgentSystemPrompt, createAgentUserMessage } from "./agentPrompt";
 import { createAgentToolRegistry } from "./agentToolRegistry";
-import { actionForRequest, buildProjectIndex, createTaskPlan, isComplexTask, recommendProvider, reviewPatch, selectRelevantFiles } from "./agentIntelligence";
+import { actionForRequest, buildProjectIndex, classifyTask, createTaskPlan, isComplexTask, recommendProvider, reviewPatch, selectRelevantFiles } from "./agentIntelligence";
 import type {
+  AgentDiagnosisHypothesis,
   AgentEvent,
   AgentRequest,
   AgentReviewFinding,
@@ -41,17 +42,18 @@ const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(v
 const reviewSeverities = new Set<AgentReviewFinding["severity"]>(["critical", "high", "medium", "low", "info"]);
 
 export interface ParsedAgentAction {
-  type: "tool_call" | "plan" | "review" | "final";
+  type: "tool_call" | "plan" | "diagnosis" | "review" | "final";
   tool?: AgentToolName;
   arguments?: Record<string, unknown>;
   steps?: string[];
   text?: string;
   findings?: AgentReviewFinding[];
+  hypotheses?: AgentDiagnosisHypothesis[];
 }
 
 const toolNameSet = new Set<AgentToolName>([
   "READ_FILE", "LIST_FILES", "SEARCH_CODE", "GET_CURRENT_FILE", "GET_SELECTION",
-  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
+  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_RELATED_FILES", "GET_PACKAGE_INFO", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
 ]);
 
 const parseReviewFindings = (value: unknown): AgentReviewFinding[] => !Array.isArray(value) ? [] : value.slice(0, 30).flatMap((entry) => {
@@ -59,6 +61,13 @@ const parseReviewFindings = (value: unknown): AgentReviewFinding[] => !Array.isA
   const line = typeof entry.line === "number" && Number.isInteger(entry.line) && entry.line >= 1 && entry.line <= 1_000_000 ? entry.line : undefined;
   const column = typeof entry.column === "number" && Number.isInteger(entry.column) && entry.column >= 1 && entry.column <= 1_000_000 ? entry.column : undefined;
   return [{ severity: entry.severity as AgentReviewFinding["severity"], ...(typeof entry.file === "string" ? { file: entry.file.slice(0, 260) } : {}), ...(line === undefined ? {} : { line }), ...(column === undefined ? {} : { column }), title: entry.title.trim().slice(0, 240), explanation: entry.explanation.trim().slice(0, 1_000), ...(typeof entry.suggestion === "string" && entry.suggestion.trim() ? { suggestion: entry.suggestion.trim().slice(0, 800) } : {}) }];
+});
+
+const diagnosisConfidences = new Set<AgentDiagnosisHypothesis["confidence"]>(["confirmed", "likely", "possible"]);
+const parseDiagnosis = (value: unknown): AgentDiagnosisHypothesis[] => !Array.isArray(value) ? [] : value.slice(0, 8).flatMap((entry) => {
+  if (!isRecord(entry) || typeof entry.title !== "string" || typeof entry.explanation !== "string" || !diagnosisConfidences.has(entry.confidence as AgentDiagnosisHypothesis["confidence"])) return [];
+  const evidence = Array.isArray(entry.evidence) ? entry.evidence.filter((item): item is string => typeof item === "string").map((item) => item.trim().slice(0, 320)).filter(Boolean).slice(0, 5) : [];
+  return [{ confidence: entry.confidence as AgentDiagnosisHypothesis["confidence"], title: entry.title.trim().slice(0, 240), explanation: entry.explanation.trim().slice(0, 1_000), evidence, ...(typeof entry.recommendation === "string" && entry.recommendation.trim() ? { recommendation: entry.recommendation.trim().slice(0, 800) } : {}) }];
 });
 
 export const parseAgentAction = (content: string): ParsedAgentAction | null => {
@@ -73,6 +82,10 @@ export const parseAgentAction = (content: string): ParsedAgentAction | null => {
     if (value.type === "plan" && Array.isArray(value.steps)) {
       const steps = value.steps.filter((step): step is string => typeof step === "string").map((step) => step.trim().slice(0, 240)).filter(Boolean).slice(0, 12);
       return steps.length ? { type: "plan", steps } : { type: "final", text: trimmed };
+    }
+    if (value.type === "diagnosis") {
+      const hypotheses = parseDiagnosis(value.hypotheses);
+      return hypotheses.length ? { type: "diagnosis", hypotheses } : { type: "final", text: "The agent could not establish an evidence-backed diagnosis." };
     }
     if (value.type === "tool_call" && typeof value.tool === "string" && toolNameSet.has(value.tool as AgentToolName)) {
       return { type: "tool_call", tool: value.tool as AgentToolName, arguments: value.arguments && typeof value.arguments === "object" && !Array.isArray(value.arguments) ? value.arguments as Record<string, unknown> : {} };
@@ -89,7 +102,7 @@ export const parseAgentAction = (content: string): ParsedAgentAction | null => {
 };
 
 const actionSummary = (tool: AgentToolName, args: Record<string, unknown>) => {
-  const details = Object.entries(args).filter(([key]) => ["path", "query", "category", "language"].includes(key)).map(([key, value]) => `${key}=${String(value).slice(0, 80)}`).join(", ");
+  const details = Object.entries(args).filter(([key]) => ["path", "query", "category", "language", "fileId"].includes(key)).map(([key, value]) => `${key}=${String(value).slice(0, 80)}`).join(", ");
   return details ? `${tool} (${details})` : tool;
 };
 
@@ -185,7 +198,7 @@ export const executeAgent = async (
     const recommendation = recommendProvider(service.getProviders(), actionForRequest(request));
     const projectIndex = buildProjectIndex(room);
     const relevant = selectRelevantFiles(room, request, projectIndex);
-    emit({ type: "context", files: relevant.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match" })), projectSummary: projectIndex.summary, ...(recommendation ? { recommendation: { ...recommendation, selected: recommendation.providerId === request.settings.provider && recommendation.model === request.settings.model } } : {}) });
+    emit({ type: "context", files: relevant.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match" })), projectSummary: projectIndex.summary, classification: classifyTask(request), ...(recommendation ? { recommendation: { ...recommendation, selected: recommendation.providerId === request.settings.provider && recommendation.model === request.settings.model } } : {}) });
     const toolContext: AgentToolContext = {
       room,
       request,
@@ -226,6 +239,11 @@ export const executeAgent = async (
       if (action.type === "plan") {
         emit({ type: "plan", steps: action.steps ?? [] });
         messages.push({ role: "user", content: "The plan is recorded. Continue with the next safe tool call or provide the final answer." });
+        continue;
+      }
+      if (action.type === "diagnosis") {
+        emit({ type: "diagnosis", hypotheses: action.hypotheses ?? [] });
+        messages.push({ role: "user", content: "The bounded diagnosis is recorded. Continue with a verified tool call, a patch proposal, or a concise final answer. Do not repeat hidden reasoning." });
         continue;
       }
       if (action.type === "review") {

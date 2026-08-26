@@ -11,6 +11,7 @@ const defaultSettings: AISettings = { provider: "ollama", model: "", temperature
 const promptLabels: Record<AIAction, string> = { explain: "Explain", generate: "Generate", fix: "Fix", optimize: "Optimize", refactor: "Refactor", test: "Generate tests for", document: "Document", summarize: "Summarize", review: "Review", error: "Explain error in", custom: "Ask about" };
 let activeController: AbortController | null = null;
 let activeRequestId: string | null = null;
+let activeCancelContext: { roomId: string; guestToken?: string } | null = null;
 
 interface PersistedAIState { conversations: AIConversation[]; settings: AISettings; }
 const boundedConversations = (conversations: AIConversation[]) => conversations.map((conversation) => ({ ...conversation, messages: conversation.messages.slice(-MAX_MESSAGES_PER_CONVERSATION) })).sort((left, right) => right.updatedAt - left.updatedAt).slice(0, MAX_CONVERSATIONS);
@@ -28,6 +29,7 @@ const continuityFor = (events: AgentEvent[]) => {
     if (event.type === "status") return [`status: ${event.message}`];
     if (event.type === "context") return [`context: ${event.files.length} relevant file(s)`];
     if (event.type === "plan") return [`plan: ${event.steps.slice(0, 3).join("; ")}`];
+    if (event.type === "diagnosis") return [`diagnosis: ${event.hypotheses.slice(0, 3).map((hypothesis) => `${hypothesis.confidence} ${hypothesis.title}`).join("; ")}`];
     if (event.type === "tool_result") return [`tool result: ${event.tool} — ${event.summary}`];
     if (event.type === "patch_review") return [`patch review: ${event.findings.length} finding(s)`];
     if (event.type === "review") return [`review: ${event.findings.length} finding(s)`];
@@ -39,7 +41,7 @@ const continuityFor = (events: AgentEvent[]) => {
 interface AIStoreState {
   roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; agentTasks: AgentTaskPublic[]; agentValidations: Record<string, AgentValidationSummary>; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
   initialize: (roomId: string, workspaceId: string) => Promise<void>; refreshProviders: () => Promise<void>;
-  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; receiveAgentTask: (event: AgentTaskEvent) => void; setAgentTaskHistory: (tasks: AgentTaskPublic[]) => void; recordAgentValidation: (taskId: string | undefined, validation: AgentValidationSummary) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
+  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; setAgentProposalHistory: (events: AgentProposalEvent[]) => void; receiveAgentTask: (event: AgentTaskEvent) => void; setAgentTaskHistory: (tasks: AgentTaskPublic[]) => void; recordAgentValidation: (taskId: string | undefined, validation: AgentValidationSummary) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
   newConversation: () => void; selectConversation: (id: string) => void; deleteConversation: (id: string) => void; clearConversation: () => void; send: (context: AIRequestContext) => Promise<void>; retryLast: (context: AIRequestContext) => Promise<void>; cancelGeneration: () => void; clearRuntime: () => void;
 }
 
@@ -74,6 +76,11 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const agentProposalEvents = [...state.agentProposalEvents.filter((entry) => !(entry.patchId === event.patchId && entry.type === event.type)), event].slice(-40);
     return { agentPatches, agentProposalEvents };
   }),
+  setAgentProposalHistory: (events) => set((state) => {
+    const merged = new Map(state.agentProposalEvents.map((event) => [`${event.patchId}:${event.type}`, event]));
+    events.filter((event) => event.roomId === state.roomId).forEach((event) => merged.set(`${event.patchId}:${event.type}`, event));
+    return { agentProposalEvents: [...merged.values()].slice(-40) };
+  }),
   receiveAgentTask: (event) => set((state) => {
     if (event.task.roomId !== state.roomId) return state;
     const existing = state.agentTasks.find((task) => task.taskId === event.task.taskId);
@@ -93,8 +100,10 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
   deleteConversation: (id) => set((state) => { if (id === state.activeConversationId) get().cancelGeneration(); const conversations = state.conversations.filter((conversation) => conversation.id !== id); const fallback = conversations.filter((conversation) => conversation.roomId === state.roomId && conversation.workspaceId === state.workspaceId).sort((left, right) => right.updatedAt - left.updatedAt)[0]; savePersisted(conversations, state.settings); return { conversations, activeConversationId: fallback?.id ?? null }; }),
   clearConversation: () => set((state) => { get().cancelGeneration(); if (!state.activeConversationId) return {}; const conversations = updateConversation(state.conversations, state.activeConversationId, (conversation) => ({ ...conversation, title: "New AI conversation", updatedAt: Date.now(), messages: [] })); savePersisted(conversations, state.settings); return { conversations, draft: "", error: null, lifecycle: "idle" }; }),
   cancelGeneration: () => {
-    const requestId = activeRequestId; activeController?.abort(); activeController = null; activeRequestId = null;
+    const requestId = activeRequestId; const cancelContext = activeCancelContext; activeController?.abort(); activeController = null; activeRequestId = null; activeCancelContext = null;
     if (!requestId) return;
+    const stateBeforeCancel = get();
+    if (cancelContext && stateBeforeCancel.conversations.some((conversation) => conversation.messages.some((message) => message.id === requestId))) void api.cancelAgentTask(cancelContext.roomId, cancelContext.guestToken, requestId).catch(() => { /* Abort remains authoritative if the cancel request races disconnect. */ });
     set((state) => {
       const conversations = state.activeConversationId ? updateConversation(state.conversations, state.activeConversationId, (conversation) => ({ ...conversation, updatedAt: Date.now(), messages: conversation.messages.map((message) => message.id === requestId ? { ...message, interrupted: true } : message) })) : state.conversations;
       savePersisted(conversations, state.settings); return { conversations, generating: false, lifecycle: "cancelled", error: null };
@@ -107,7 +116,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const userMessage: AIConversationMessage = { id: messageId(), role: "user", content: prompt || `${promptLabels[state.action]} the selected code.`, createdAt: Date.now(), action: state.action };
     const assistant: AIConversationMessage = { id: messageId(), role: "assistant", content: "", createdAt: Date.now(), provider: state.settings.provider, model: state.settings.model, action: state.action };
     const conversations = updateConversation(state.conversations, conversation.id, (entry) => ({ ...entry, title: entry.messages.length ? entry.title : titleFor(state.action, userMessage.content), updatedAt: Date.now(), messages: [...entry.messages, userMessage, assistant] }));
-    const controller = new AbortController(); activeController = controller; activeRequestId = assistant.id;
+    const controller = new AbortController(); activeController = controller; activeRequestId = assistant.id; activeCancelContext = { roomId: context.roomId, guestToken: context.guestToken };
     set({ conversations, generating: true, lifecycle: "preparing-context", error: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [] }); savePersisted(conversations, state.settings);
     const isCurrent = () => activeRequestId === assistant.id && get().roomId === context.roomId && get().workspaceId === context.workspaceId && get().activeConversationId === conversation.id;
     const setAssistantContent = (content: string) => { if (!isCurrent()) return; set((latest) => ({ conversations: updateConversation(latest.conversations, conversation.id, (entry) => ({ ...entry, updatedAt: Date.now(), messages: entry.messages.map((message) => message.id === assistant.id ? { ...message, content } : message) })) })); };
@@ -132,11 +141,11 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
       } else {
         const result = await api.completeAgent(request, controller.signal); if (isCurrent()) { result.events.forEach(handleAgentEvent); setAssistantContent(result.finalText); }
       }
-      if (isCurrent()) { activeController = null; activeRequestId = null; const latest = get(); set({ generating: false, lifecycle: latest.agentPatches.length ? "waiting-for-approval" : "completed" }); savePersisted(latest.conversations, latest.settings); }
+      if (isCurrent()) { activeController = null; activeRequestId = null; activeCancelContext = null; const latest = get(); set({ generating: false, lifecycle: latest.agentPatches.length ? "waiting-for-approval" : "completed" }); savePersisted(latest.conversations, latest.settings); }
     } catch (error) {
       if (controller.signal.aborted) return;
       if (!isCurrent()) return;
-      activeController = null; activeRequestId = null; const message = error instanceof Error ? error.message : "AI request failed.";
+      activeController = null; activeRequestId = null; activeCancelContext = null; const message = error instanceof Error ? error.message : "AI request failed.";
       const latest = get(); const failed = updateConversation(latest.conversations, conversation.id, (entry) => ({ ...entry, updatedAt: Date.now(), messages: [...entry.messages, { id: messageId(), role: "error", content: message, createdAt: Date.now(), action: state.action }] }));
       set({ conversations: failed, generating: false, lifecycle: "failed", error: message }); savePersisted(failed, latest.settings);
     }

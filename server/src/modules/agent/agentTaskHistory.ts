@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentPatch, AgentRequest, AgentResult, AgentTaskPublic, AgentTaskStatus, AgentValidationStatus } from "./agentTypes";
+import { classifyTask } from "./agentIntelligence";
 
 interface AgentTaskRecord extends AgentTaskPublic {
   userId: string;
@@ -39,6 +40,7 @@ const publicTask = (task: AgentTaskRecord): AgentTaskPublic => ({
   ...(task.conversationId ? { conversationId: task.conversationId } : {}),
   mode: task.mode,
   intent: task.intent,
+  ...(task.classification ? { classification: task.classification } : {}),
   summary: task.summary,
   status: task.status,
   patchStatus: task.patchStatus,
@@ -69,6 +71,7 @@ export const startAgentTask = (request: AgentRequest) => {
     userId: request.userId,
     mode: request.mode,
     intent: request.intent ?? (request.mode === "DEBUG" ? "fix" : request.mode === "EDIT" ? "generate" : "explain"),
+    classification: classifyTask(request),
     summary: safeSummary(request.userInstruction),
     provider: request.settings.provider,
     model: request.settings.model.slice(0, 160),
@@ -99,6 +102,8 @@ export const getAgentTask = (taskId: string, roomId?: string, userId?: string) =
   return null;
 };
 
+export const clearAgentTasks = (roomId: string) => { tasks.delete(roomId); };
+
 export const canTransitionAgentTask = (from: AgentTaskStatus, to: AgentTaskStatus) => from === to || transitions[from].includes(to);
 
 export const updateAgentTask = (taskId: string, update: TaskUpdate) => {
@@ -106,6 +111,8 @@ export const updateAgentTask = (taskId: string, update: TaskUpdate) => {
     const task = roomTasks.find((entry) => entry.taskId === taskId);
     if (!task) continue;
     if (update.status && !canTransitionAgentTask(task.status, update.status)) return null;
+    const changed = Object.entries(update).some(([key, value]) => task[key as keyof AgentTaskRecord] !== value);
+    if (!changed) return task;
     Object.assign(task, update, { updatedAt: Date.now() });
     emit("task_updated", task);
     return task;

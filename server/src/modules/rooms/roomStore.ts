@@ -16,7 +16,9 @@ import type {
   UserIdentityKind
 } from "./roomTypes";
 import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, MAX_WORKSPACE_CONTENT_LENGTH, updateWorkspaceFileContent } from "./workspaceService";
-import { markAgentProposalsStale } from "../agent/agentEvents";
+import { clearAgentProposals, markAgentProposalsStale } from "../agent/agentEvents";
+import { invalidateProjectIndexCache } from "../agent/agentIntelligence";
+import { clearAgentTasks } from "../agent/agentTaskHistory";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
@@ -332,6 +334,7 @@ export const roomStore = {
 
     const file = updateWorkspaceFileContent(room.workspace, fileId, code, userId);
     room.workspace.activeFileId = file.id;
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -366,6 +369,7 @@ export const roomStore = {
     if (currentLength + totalDelta > MAX_WORKSPACE_CONTENT_LENGTH) throw new Error("Workspace content limit reached");
     for (const change of changes) updateWorkspaceFileContent(room.workspace, change.fileId, change.content, userId);
     room.workspace.activeFileId = changes[0].fileId;
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -394,6 +398,9 @@ export const roomStore = {
     if (resetCode) activeFile.content = LANGUAGE_CONFIG[language].starter;
     activeFile.updatedAt = Date.now();
     activeFile.updatedByUserId = userId;
+    room.workspace.updatedAt = activeFile.updatedAt;
+    room.workspace.ai.contextVersion += 1;
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -498,7 +505,10 @@ export const roomStore = {
       activeFile.content = LANGUAGE_CONFIG[activeFile.language].starter;
       activeFile.updatedAt = Date.now();
       activeFile.updatedByUserId = actingUserId;
+      room.workspace.updatedAt = activeFile.updatedAt;
+      room.workspace.ai.contextVersion += 1;
     }
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -546,7 +556,10 @@ export const roomStore = {
       activeFile.language = entry.language;
       activeFile.updatedAt = Date.now();
       activeFile.updatedByUserId = actingUserId;
+      room.workspace.updatedAt = activeFile.updatedAt;
+      room.workspace.ai.contextVersion += 1;
     }
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -568,6 +581,9 @@ export const roomStore = {
 
     room.deletedAt = Date.now();
     rooms.delete(roomId);
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    clearAgentProposals(roomId);
+    clearAgentTasks(roomId);
   },
 
   getRoomSnapshot(roomId: string) {
@@ -581,6 +597,7 @@ export const roomStore = {
     if (room.isPaused) throw new Error("Room editing is paused");
     if (room.appliedWorkspaceOperationIds.includes(operation.id)) return { room: serializeRoom(room), duplicate: true };
     const activeFile = applyWorkspaceOperation(room.workspace, operation, userId);
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);

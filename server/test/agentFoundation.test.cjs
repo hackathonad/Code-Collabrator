@@ -208,6 +208,15 @@ test("validation cancellation is reported without claiming a pass", async () => 
   assert.match(result.summary, /cancelled/i);
 });
 
+test("already-cancelled validation never spawns a process", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const result = await createValidationRunner({ timeoutMs: 2_000 })("tests", controller.signal);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.durationMs, 0);
+  assert.equal(result.exitCode, null);
+});
+
 test("runtime executes one safe tool call at a time and returns a concise final", async () => {
   const fixture = createFixture();
   let calls = 0;

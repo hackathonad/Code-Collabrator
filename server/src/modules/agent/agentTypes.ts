@@ -12,6 +12,8 @@ import type {
 } from "../ai/aiTypes";
 
 export type AgentMode = "ASK" | "EDIT" | "DEBUG" | "EXPLAIN";
+export type AgentTaskKind = "question" | "explain" | "debug" | "edit" | "refactor" | "review" | "test" | "architecture" | "documentation" | "performance" | "security";
+export type AgentDiagnosisConfidence = "confirmed" | "likely" | "possible";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
 export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable";
@@ -23,6 +25,8 @@ export type AgentToolName =
   | "GET_SELECTION"
   | "GET_WORKSPACE_SUMMARY"
   | "GET_PROJECT_INDEX"
+  | "GET_RELATED_FILES"
+  | "GET_PACKAGE_INFO"
   | "GET_TASK_HISTORY"
   | "GET_DIAGNOSTICS"
   | "APPLY_PATCH"
@@ -110,6 +114,20 @@ export interface AgentReviewFinding {
   suggestion?: string;
 }
 
+export interface AgentDiagnosisHypothesis {
+  confidence: AgentDiagnosisConfidence;
+  title: string;
+  explanation: string;
+  evidence: string[];
+  recommendation?: string;
+}
+
+export interface AgentTaskClassification {
+  kind: AgentTaskKind;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+}
+
 export interface AgentValidationSummary {
   category: ValidationCategory;
   status: AgentValidationStatus;
@@ -124,6 +142,7 @@ export interface AgentTaskPublic {
   conversationId?: string;
   mode: AgentMode;
   intent: AIAction;
+  classification?: AgentTaskClassification;
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
@@ -149,8 +168,9 @@ export interface AgentProposalEvent {
 
 export type AgentEvent =
   | { type: "status"; message: string }
-  | { type: "context"; files: Array<{ path: string; reason: string }>; projectSummary: string; recommendation?: { providerId: string; model: string; reason: string; selected: boolean } }
+  | { type: "context"; files: Array<{ path: string; reason: string }>; projectSummary: string; classification?: AgentTaskClassification; recommendation?: { providerId: string; model: string; reason: string; selected: boolean } }
   | { type: "plan"; steps: string[] }
+  | { type: "diagnosis"; hypotheses: AgentDiagnosisHypothesis[] }
   | { type: "tool_call"; tool: AgentToolName; summary: string }
   | { type: "tool_result"; tool: AgentToolName; ok: boolean; summary: string }
   | { type: "patch_proposal"; patch: AgentPatch }

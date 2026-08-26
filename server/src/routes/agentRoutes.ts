@@ -6,7 +6,7 @@ import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
 import { emitAgentWorkspaceChange, getAgentProposal, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import { getAgentTask, getAgentTaskHistory, recordTaskPatches, recordTaskValidation, startAgentTask, taskStatusForResult, updateAgentTask } from "../modules/agent/agentTaskHistory";
+import { getAgentTask, getPublicAgentTaskHistory, recordTaskPatches, recordTaskValidation, startAgentTask, taskStatusForResult, updateAgentTask } from "../modules/agent/agentTaskHistory";
 import { createValidationRunner } from "../modules/agent/validationRunner";
 import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
@@ -21,6 +21,7 @@ const modes = new Set<AgentMode>(["ASK", "EDIT", "DEBUG", "EXPLAIN"]);
 const intents = new Set(["explain", "generate", "fix", "optimize", "refactor", "test", "document", "summarize", "review", "error", "custom"]);
 const validationCategories = new Set<ValidationCategory>(["typecheck", "lint", "tests", "build"]);
 const providers = new Set<AIProviderId>(["gemini", "groq", "openrouter", "ollama", "openai", "anthropic", "custom"]);
+const activeAgentControllers = new Map<string, AbortController>();
 const clip = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : "";
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -227,6 +228,7 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
     const task = startAgentTask(prepared.agent);
     if (!task) throw new AgentRouteError(409, "This agent request was already started. Use its task history or start a new request.", "DUPLICATE_TASK");
     taskId = task.taskId;
+    activeAgentControllers.set(taskId, controller);
     updateAgentTask(taskId, { status: "planning" });
     updateAgentTask(taskId, { status: "running" });
     const result = await executeAgent({ ...prepared.agent, taskId }, prepared.room, undefined, {}, controller.signal);
@@ -234,7 +236,7 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
     updateTaskFromResult(taskId, result);
     response.json({ ok: true, result });
   } catch (error) { if (taskId) updateTaskFromError(taskId, error); if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
-  finally { request.off("close", abortRequest); }
+  finally { activeAgentControllers.delete(taskId ?? ""); request.off("close", abortRequest); }
 });
 
 router.post("/rooms/:roomId/agent/stream", guestSession, async (request, response) => {
@@ -256,6 +258,7 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
     return;
   }
   const taskId = task.taskId;
+  activeAgentControllers.set(taskId, controller);
   updateAgentTask(taskId, { status: "planning" });
   updateAgentTask(taskId, { status: "running" });
   const abortIfDisconnected = () => { if (!response.writableEnded) controller.abort(); };
@@ -270,9 +273,29 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
     updateTaskFromError(taskId, error);
     if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify({ type: "error", code: error instanceof AIProviderRequestError || error instanceof AIProviderUnavailableError ? error.code : "AGENT_ERROR", message: error instanceof Error ? error.message : "Unable to stream the coding-agent response" })}\n\n`);
   } finally {
+    activeAgentControllers.delete(taskId);
     response.off("close", abortIfDisconnected);
     response.end();
   }
+});
+
+router.post("/rooms/:roomId/agent/:taskId/cancel", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const taskId = typeof request.params.taskId === "string" ? request.params.taskId.slice(0, 128) : "";
+    if (!roomId || !userId || !taskId) throw new AgentRouteError(400, "A valid room session and task ID are required");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    const task = getAgentTask(taskId, roomId, userId);
+    if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
+    const controller = activeAgentControllers.get(taskId);
+    if (controller) controller.abort();
+    const cancellable = ["queued", "planning", "running", "waiting_for_approval", "validating", "applying"].includes(task.status);
+    if (cancellable) updateAgentTask(taskId, { status: "cancelled" });
+    response.json({ ok: true, taskId, status: cancellable ? "cancelled" : task.status });
+  } catch (error) { sendError(response, error); }
 });
 
 router.get("/rooms/:roomId/agent/history", guestSession, async (request, response) => {
@@ -283,8 +306,7 @@ router.get("/rooms/:roomId/agent/history", guestSession, async (request, respons
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
-    const history = getAgentTaskHistory(roomId, userId).map(({ taskId, roomId: taskRoomId, conversationId, mode, intent, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId: taskRoomId, ...(conversationId ? { conversationId } : {}), mode, intent, summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
-    response.json({ ok: true, tasks: history });
+    response.json({ ok: true, tasks: getPublicAgentTaskHistory(roomId) });
   } catch (error) { sendError(response, error); }
 });
 

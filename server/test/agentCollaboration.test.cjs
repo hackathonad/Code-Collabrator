@@ -5,6 +5,8 @@ const { Server } = require("socket.io");
 const { io: connectSocket } = require("socket.io-client");
 const { createGuestSessionToken } = require("../dist/middleware/guestSession");
 const { emitAgentWorkspaceChange, registerAgentProposal, subscribeAgentProposal, updateAgentProposal } = require("../dist/modules/agent/agentEvents");
+const { getPublicAgentProposalHistory } = require("../dist/modules/agent/agentEvents");
+const { getPublicAgentTaskHistory, startAgentTask } = require("../dist/modules/agent/agentTaskHistory");
 const { createAgentToolRegistry } = require("../dist/modules/agent/agentToolRegistry");
 const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
 const { roomStore } = require("../dist/modules/rooms/roomStore");
@@ -107,4 +109,23 @@ test("agent proposals broadcast safely and approved changes converge across coll
     await new Promise((resolve) => io.close(resolve));
     if (httpServer.listening) await new Promise((resolve, reject) => httpServer.close((error) => error ? reject(error) : resolve()));
   }
+});
+
+test("reconnect history is room-scoped and metadata-only", () => {
+  const first = roomStore.createRoom("History owner", "javascript");
+  const second = roomStore.createRoom("Other owner", "javascript");
+  const request = { roomId: first.room.roomId, userId: first.participant.userId, workspaceId: first.room.workspace.id, currentFileId: first.room.workspace.activeFileId, userInstruction: "token=should-redact", conversation: [], mode: "ASK", language: "javascript", settings: { provider: "custom", model: "test", temperature: 0, maxTokens: 64, streaming: false, workspaceContextSize: "minimal" }, contextBudget: 8_000 };
+  startAgentTask(request);
+  startAgentTask({ ...request, roomId: second.room.roomId, userId: second.participant.userId, workspaceId: second.room.workspace.id, currentFileId: second.room.workspace.activeFileId });
+  const file = first.room.workspace.files[first.room.workspace.activeFileId];
+  const patch = { patchId: `history-${first.room.roomId}`, roomId: first.room.roomId, workspaceId: first.room.workspace.id, fileId: file.id, path: "main.js", baseVersion: first.room.version, expectedContent: file.content, replacement: "private-token=do-not-share", additions: 1, deletions: 0, preview: "secret preview", applied: false, status: "pending" };
+  registerAgentProposal(patch, first.participant.userId);
+  const tasks = getPublicAgentTaskHistory(first.room.roomId);
+  const proposals = getPublicAgentProposalHistory(first.room.roomId);
+  assert.equal(tasks.length, 1);
+  assert.equal(proposals.length, 1);
+  assert.equal(Object.hasOwn(proposals[0], "preview"), false);
+  assert.equal(Object.hasOwn(proposals[0], "replacement"), false);
+  assert.equal(getPublicAgentTaskHistory(second.room.roomId).length, 1);
+  assert.doesNotMatch(tasks[0].summary, /should-redact/);
 });

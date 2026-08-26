@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { roomStore } = require("../dist/modules/rooms/roomStore");
-const { buildProjectIndex, createTaskPlan, isComplexTask, recommendProvider, reviewPatch, selectRelevantFiles } = require("../dist/modules/agent/agentIntelligence");
+const { buildProjectIndex, classifyTask, createTaskPlan, getProjectIndexCacheStats, invalidateProjectIndexCache, isComplexTask, recommendProvider, relatedFilesFor, reviewPatch, selectRelevantFiles } = require("../dist/modules/agent/agentIntelligence");
 const { createAgentToolRegistry } = require("../dist/modules/agent/agentToolRegistry");
 const { parseAgentAction } = require("../dist/modules/agent/agentRuntime");
 const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
@@ -50,6 +50,41 @@ test("relevance selection and plans distinguish simple questions from workflow t
   assert.match(plan[1], /security|correctness/i);
 });
 
+test("project indexing is cached, invalidated by workspace changes, and never crosses room keys", () => {
+  const first = fixture();
+  const second = fixture();
+  const firstIndex = buildProjectIndex(first.room);
+  assert.equal(buildProjectIndex(first.room), firstIndex);
+  const secondIndex = buildProjectIndex(second.room);
+  assert.notEqual(firstIndex, secondIndex);
+  assert.ok(getProjectIndexCacheStats().keys.some((key) => key.startsWith(`${first.room.roomId}:`)));
+  const changed = roomStore.updateCode(first.room.roomId, first.request.userId, "console.log('changed');", first.request.currentFileId).room;
+  const changedIndex = buildProjectIndex(changed);
+  assert.notEqual(changedIndex, firstIndex);
+  invalidateProjectIndexCache(first.room.roomId, first.room.workspace.id);
+  assert.equal(buildProjectIndex(changed).workspaceId, changed.workspace.id);
+});
+
+test("classification, entry points, and import relationships stay bounded and evidence based", async () => {
+  const value = fixture();
+  const root = value.room.workspace.rootFolderId;
+  value.room = roomStore.applyWorkspaceOperation(value.room.roomId, value.request.userId, { id: "create-helper", type: "create-file", parentId: root, name: "helper.js" }).room;
+  const helper = Object.values(value.room.workspace.files).find((file) => file.name === "helper.js");
+  value.room = roomStore.updateCode(value.room.roomId, value.request.userId, "export const helper = 1;", helper.id).room;
+  const main = value.room.workspace.files[value.request.currentFileId];
+  value.room = roomStore.updateCode(value.room.roomId, value.request.userId, "import { helper } from './helper';\nconsole.log(helper);", main.id).room;
+  const index = buildProjectIndex(value.room);
+  assert.ok(index.files.find((file) => file.path === "main.js").summary.length <= 180);
+  assert.ok(index.entryPoints.includes("main.js"));
+  assert.ok(relatedFilesFor(index, main.id).some((entry) => entry.file.id === helper.id && entry.reasons.includes("requested file imports it")));
+  const registry = createAgentToolRegistry({ room: value.room, request: value.request, allowPatchApplication: false });
+  assert.ok(registry.list().includes("GET_RELATED_FILES"));
+  assert.ok(registry.list().includes("GET_PACKAGE_INFO"));
+  assert.equal((await registry.run("GET_PACKAGE_INFO", {})).ok, true);
+  assert.deepEqual(classifyTask({ userInstruction: "review security boundaries", mode: "ASK" }).kind, "security");
+  assert.equal(classifyTask({ userInstruction: "what does this do?", intent: "explain", mode: "ASK" }).confidence, "high");
+});
+
 test("review protocol is structured and patch review flags dangerous or oversized proposals", () => {
   const parsed = parseAgentAction(JSON.stringify({ type: "review", findings: [{ severity: "high", file: "src/app.ts", line: 12, title: "Unsafe execution", explanation: "Evidence from the inspected file", suggestion: "Use an allowlist" }] }));
   assert.equal(parsed.type, "review");
@@ -57,6 +92,13 @@ test("review protocol is structured and patch review flags dangerous or oversize
   const findings = reviewPatch({ path: "src/app.ts", replacement: "import { execSync } from 'node:child_process';" });
   assert.ok(findings.some((finding) => finding.severity === "high"));
   assert.ok(reviewPatch({ path: "src/app.ts", replacement: "" }).some((finding) => finding.title === "Empty replacement"));
+});
+
+test("diagnosis protocol accepts bounded confidence and evidence", () => {
+  const parsed = parseAgentAction(JSON.stringify({ type: "diagnosis", hypotheses: [{ confidence: "likely", title: "Missing import", explanation: "The symbol is referenced before it is defined.", evidence: ["src/main.js:1"], recommendation: "Inspect the import graph." }] }));
+  assert.equal(parsed.type, "diagnosis");
+  assert.equal(parsed.hypotheses[0].confidence, "likely");
+  assert.equal(parseAgentAction('{"type":"diagnosis","hypotheses":[{"confidence":"certain","title":"bad","explanation":"bad","evidence":[]}]}').type, "final");
 });
 
 test("multi-file proposals apply atomically and stale conflicts leave every file unchanged", async () => {
