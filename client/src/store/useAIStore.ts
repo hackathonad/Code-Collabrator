@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api } from "../lib/api";
 import type { AIAction, AIConversation, AIConversationMessage, AILifecycleState, AIProviderDescriptor, AIRequestContext, AISelection, AISettings } from "../types/ai";
-import type { AgentEvent, AgentMode, AgentPatch, AgentProposalEvent, AgentProposalStatus } from "../types/agent";
+import type { AgentEvent, AgentMode, AgentPatch, AgentProposalEvent, AgentProposalStatus, AgentTaskEvent, AgentTaskPublic, AgentValidationSummary } from "../types/agent";
 
 const STORAGE_KEY = "code-sphere-ai-state";
 const MAX_CONVERSATIONS = 30;
@@ -25,15 +25,15 @@ const titleFor = (action: AIAction, prompt: string) => {
 };
 
 interface AIStoreState {
-  roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
+  roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; agentTasks: AgentTaskPublic[]; agentValidations: Record<string, AgentValidationSummary>; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
   initialize: (roomId: string, workspaceId: string) => Promise<void>; refreshProviders: () => Promise<void>;
-  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
+  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; receiveAgentTask: (event: AgentTaskEvent) => void; setAgentTaskHistory: (tasks: AgentTaskPublic[]) => void; recordAgentValidation: (taskId: string | undefined, validation: AgentValidationSummary) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
   newConversation: () => void; selectConversation: (id: string) => void; deleteConversation: (id: string) => void; clearConversation: () => void; send: (context: AIRequestContext) => Promise<void>; retryLast: (context: AIRequestContext) => Promise<void>; cancelGeneration: () => void; clearRuntime: () => void;
 }
 
 const persisted = typeof window === "undefined" ? { conversations: [], settings: defaultSettings } : readPersisted();
 export const useAIStore = create<AIStoreState>((set, get) => ({
-  roomId: null, workspaceId: null, conversations: persisted.conversations, activeConversationId: null, providers: [], settings: persisted.settings, action: "explain", agentMode: "ASK", draft: "", selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], loadingProviders: false, lifecycle: "idle", generating: false, error: null,
+  roomId: null, workspaceId: null, conversations: persisted.conversations, activeConversationId: null, providers: [], settings: persisted.settings, action: "explain", agentMode: "ASK", draft: "", selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, loadingProviders: false, lifecycle: "idle", generating: false, error: null,
   refreshProviders: async () => {
     set({ loadingProviders: true });
     try {
@@ -50,7 +50,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     get().cancelGeneration(); const current = get();
     const matching = current.conversations.filter((conversation) => conversation.roomId === roomId && conversation.workspaceId === workspaceId).sort((left, right) => right.updatedAt - left.updatedAt);
     const active = matching[0] ?? createConversation(roomId, workspaceId); const conversations = matching.length ? current.conversations : [...current.conversations, active];
-    set({ roomId, workspaceId, conversations, activeConversationId: active.id, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], error: null, lifecycle: "idle" }); savePersisted(conversations, current.settings);
+    set({ roomId, workspaceId, conversations, activeConversationId: active.id, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, error: null, lifecycle: "idle" }); savePersisted(conversations, current.settings);
     await get().refreshProviders();
   },
   setAction: (action) => set({ action }), setAgentMode: (agentMode) => set({ agentMode }), setDraft: (draft) => set({ draft }), setSelection: (selection) => set({ selection }),
@@ -63,6 +63,9 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const agentProposalEvents = [...state.agentProposalEvents.filter((entry) => !(entry.patchId === event.patchId && entry.type === event.type)), event].slice(-40);
     return { agentPatches, agentProposalEvents };
   }),
+  receiveAgentTask: (event) => set((state) => event.task.roomId !== state.roomId ? state : { agentTasks: [event.task, ...state.agentTasks.filter((task) => task.taskId !== event.task.taskId)].slice(0, 40) }),
+  setAgentTaskHistory: (tasks) => set((state) => ({ agentTasks: tasks.filter((task) => task.roomId === state.roomId).slice(0, 40) })),
+  recordAgentValidation: (taskId, validation) => set((state) => ({ agentValidations: taskId ? { ...state.agentValidations, [taskId]: validation } : state.agentValidations })),
   markAgentPatchesStale: (version) => set((state) => ({ agentPatches: state.agentPatches.map((patch) => patch.status === "pending" && patch.baseVersion < version ? { ...patch, status: "stale" } : patch) })),
   markAgentPatchStatus: (patchId, status) => set((state) => ({ agentPatches: state.agentPatches.map((patch) => patch.patchId === patchId ? { ...patch, status, applied: status === "applied" } : patch) })),
   newConversation: () => set((state) => { get().cancelGeneration(); if (!state.roomId || !state.workspaceId) return {}; const conversation = createConversation(state.roomId, state.workspaceId); const conversations = [...state.conversations, conversation]; savePersisted(conversations, state.settings); return { conversations, activeConversationId: conversation.id, draft: "", error: null, lifecycle: "idle" }; }),
@@ -99,7 +102,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     };
     try {
       const history = conversation.messages.filter((message): message is AIConversationMessage & { role: "user" | "assistant" } => message.role === "user" || message.role === "assistant").slice(-8).map((message) => ({ role: message.role, content: message.content }));
-      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, prompt: userMessage.content, currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
+      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, intent: state.action, prompt: userMessage.content, currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
       set({ lifecycle: "connecting" });
       if (state.settings.streaming && provider.supportsStreaming) {
         set({ lifecycle: "streaming" });
@@ -117,5 +120,5 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     }
   },
   retryLast: async (context) => { const state = get(); const conversation = state.conversations.find((entry) => entry.id === state.activeConversationId); const lastUser = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === "user"); if (!lastUser) return; set({ draft: lastUser.content, action: lastUser.action ?? "custom" }); await get().send(context); },
-  clearRuntime: () => { get().cancelGeneration(); set({ roomId: null, workspaceId: null, activeConversationId: null, selection: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [], generating: false, lifecycle: "idle", error: null }); }
+  clearRuntime: () => { get().cancelGeneration(); set({ roomId: null, workspaceId: null, activeConversationId: null, selection: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, generating: false, lifecycle: "idle", error: null }); }
 }));

@@ -1,7 +1,7 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 import type { RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
-import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentRequestPayload } from "../types/agent";
+import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import { storage } from "./storage";
 
@@ -303,7 +303,7 @@ export const api = {
       if (!value) return;
       let event: AgentEvent;
       try { event = JSON.parse(value) as AgentEvent; } catch { throw new Error("The coding agent returned malformed streaming data."); }
-      if (!event || !["status", "plan", "tool_call", "tool_result", "patch_proposal", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
+      if (!event || !["status", "context", "plan", "tool_call", "tool_result", "patch_proposal", "patch_review", "review", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
       onEvent(event);
       if (event.type === "error") throw new ApiRequestError(event.code === "TIMEOUT" ? 504 : 502, event.message, event.code);
     };
@@ -339,5 +339,20 @@ export const api = {
       body: JSON.stringify({ guestToken, action: "reject", patchId })
     });
     return await readJson<{ ok: true; patchId: string; status: "rejected" }>(response);
+  },
+
+  async getAgentTaskHistory(roomId: string, guestToken: string | undefined) {
+    const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/history?${query.toString()}`));
+    return (await readJson<{ ok: true; tasks: AgentTaskPublic[] }>(response)).tasks;
+  },
+
+  async validateAgent(roomId: string, guestToken: string | undefined, category: ValidationCategory, taskId?: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/validate`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, category, taskId }) });
+    if (response.status === 422) {
+      const payload = await response.json().catch(() => null) as { ok?: boolean; validation?: AgentValidationSummary; taskId?: string } | null;
+      if (payload?.validation) return payload as { ok: boolean; validation: AgentValidationSummary; taskId?: string };
+    }
+    return await readJson<{ ok: boolean; validation: AgentValidationSummary; taskId?: string }>(response);
   }
 };

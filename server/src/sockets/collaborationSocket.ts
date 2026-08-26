@@ -4,6 +4,7 @@ import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../mo
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
 import { subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
+import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
 import {
   isEditableRole,
   isRecord,
@@ -293,6 +294,10 @@ export const registerCollaborationSocket = (io: Server) => {
     io.to(event.roomId).emit("agent:proposal", event);
   });
   agentSocketSubscriptions.add(unsubscribeAgentProposal);
+  const unsubscribeAgentTasks = subscribeAgentTasks((event) => {
+    io.to(event.task.roomId).emit("agent:task", event);
+  });
+  agentSocketSubscriptions.add(unsubscribeAgentTasks);
 
 
   const checkRateLimit = (socket: Socket) => {
@@ -509,6 +514,7 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.join(payload.roomId);
         socketRoomBindings.set(socket.id, payload);
         socket.emit("room:snapshot", snapshot);
+        socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId, payload.userId));
         io.to(payload.roomId).emit("room:participants", snapshot.participants);
         void roomPersistence.saveRoom(snapshot);
       } catch (error) {

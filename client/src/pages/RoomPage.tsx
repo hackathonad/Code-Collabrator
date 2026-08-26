@@ -25,7 +25,7 @@ import { useAIStore } from "../store/useAIStore";
 import { useMediaStore } from "../store/useMediaStore";
 import { useTheme } from "../context/ThemeContext";
 import type { RoomSnapshot, SupportedLanguage } from "../types/collaboration";
-import type { AgentDiagnostic, AgentPatch } from "../types/agent";
+import type { AgentDiagnostic, AgentPatch, ValidationCategory } from "../types/agent";
 
 type CollaborationPanel = "chat" | "ai" | "people" | "activity" | null;
 type ExecutionContext = { output: string; failed: boolean } | undefined;
@@ -148,7 +148,8 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       pushToast("This proposal is stale. Generate a new patch.");
       return;
     }
-    if (room.workspace.files[patch.fileId]?.content !== patch.expectedContent) {
+    const patchFiles = patch.files ?? [{ fileId: patch.fileId, expectedContent: patch.expectedContent }];
+    if (patchFiles.some((file) => room.workspace.files[file.fileId]?.content !== file.expectedContent)) {
       useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
       pushToast("The file changed after this proposal. Generate a new patch.");
       return;
@@ -158,10 +159,21 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       storage.saveRoomSnapshot(result.room);
       setRoom(result.room);
       useAIStore.getState().markAgentPatchStatus(patch.patchId, "applied");
-      pushToast(`Applied agent patch to ${patch.path}`);
+      pushToast(`Applied agent patch to ${patch.files?.length ?? 1} file(s)`);
     } catch (issue) {
       if (issue instanceof ApiRequestError && issue.code === "PATCH_STALE") useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
       pushToast(issue instanceof Error ? issue.message : "The patch could not be applied");
+    }
+  };
+
+  const validateAgentPatch = async (patch: AgentPatch, category: ValidationCategory) => {
+    if (!session) return;
+    try {
+      const result = await api.validateAgent(roomId, session.guestToken, category);
+      useAIStore.getState().recordAgentValidation(patch.patchId, result.validation);
+      pushToast(`${category} ${result.validation.status}: ${result.validation.summary}`);
+    } catch (issue) {
+      pushToast(issue instanceof Error ? issue.message : "Validation could not be completed");
     }
   };
 
@@ -537,6 +549,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
                onReplaceFile={replaceAIFile}
                onApplyPatch={applyAgentPatch}
                onRejectPatch={rejectAgentPatch}
+               onValidatePatch={validateAgentPatch}
              />
           ) : activePanel === "chat" ? (
             <ChatPanel

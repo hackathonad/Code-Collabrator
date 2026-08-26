@@ -6,7 +6,7 @@ import { useRoomStore } from "../store/useRoomStore";
 import { useMediaStore } from "../store/useMediaStore";
 import { useAIStore } from "../store/useAIStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
-import type { AgentProposalEvent } from "../types/agent";
+import type { AgentProposalEvent, AgentTaskEvent, AgentTaskPublic } from "../types/agent";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.replace(/\/+$/, "") ?? "";
 
@@ -133,6 +133,11 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
         if (!event || event.roomId !== roomId) return;
         useAIStore.getState().receiveAgentProposalEvent(event);
       });
+      socket.on("agent:task", (event: AgentTaskEvent) => {
+        if (!event?.task || event.task.roomId !== roomId) return;
+        useAIStore.getState().receiveAgentTask(event);
+      });
+      socket.on("agent:task_history", (tasks: AgentTaskPublic[]) => useAIStore.getState().setAgentTaskHistory(tasks));
 
       socket.on("room:deleted", () => {
         void useMediaStore.getState().leave();

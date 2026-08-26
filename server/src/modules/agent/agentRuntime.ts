@@ -12,10 +12,11 @@ import { gitService } from "../git/gitService";
 import type { RoomSnapshot } from "../rooms/roomTypes";
 import { createAgentSystemPrompt, createAgentUserMessage } from "./agentPrompt";
 import { createAgentToolRegistry } from "./agentToolRegistry";
+import { actionForRequest, buildProjectIndex, createTaskPlan, isComplexTask, recommendProvider, reviewPatch, selectRelevantFiles } from "./agentIntelligence";
 import type {
   AgentEvent,
-  AgentMode,
   AgentRequest,
+  AgentReviewFinding,
   AgentResult,
   AgentRuntimeDependencies,
   AgentToolContext,
@@ -36,20 +37,29 @@ export class AgentRuntimeError extends Error {
 }
 
 const clip = (value: string, limit: number) => value.length <= limit ? value : `${value.slice(0, Math.max(0, limit - 32))}\n[…agent output truncated…]`;
-const modeAction: Record<AgentMode, AIRequestInput["action"]> = { ASK: "explain", EDIT: "generate", DEBUG: "fix", EXPLAIN: "explain" };
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const reviewSeverities = new Set<AgentReviewFinding["severity"]>(["critical", "high", "medium", "low", "info"]);
 
 export interface ParsedAgentAction {
-  type: "tool_call" | "plan" | "final";
+  type: "tool_call" | "plan" | "review" | "final";
   tool?: AgentToolName;
   arguments?: Record<string, unknown>;
   steps?: string[];
   text?: string;
+  findings?: AgentReviewFinding[];
 }
 
 const toolNameSet = new Set<AgentToolName>([
   "READ_FILE", "LIST_FILES", "SEARCH_CODE", "GET_CURRENT_FILE", "GET_SELECTION",
-  "GET_WORKSPACE_SUMMARY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
+  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
 ]);
+
+const parseReviewFindings = (value: unknown): AgentReviewFinding[] => !Array.isArray(value) ? [] : value.slice(0, 30).flatMap((entry) => {
+  if (!isRecord(entry) || typeof entry.title !== "string" || typeof entry.explanation !== "string" || !reviewSeverities.has(entry.severity as AgentReviewFinding["severity"])) return [];
+  const line = typeof entry.line === "number" && Number.isInteger(entry.line) && entry.line >= 1 && entry.line <= 1_000_000 ? entry.line : undefined;
+  const column = typeof entry.column === "number" && Number.isInteger(entry.column) && entry.column >= 1 && entry.column <= 1_000_000 ? entry.column : undefined;
+  return [{ severity: entry.severity as AgentReviewFinding["severity"], ...(typeof entry.file === "string" ? { file: entry.file.slice(0, 260) } : {}), ...(line === undefined ? {} : { line }), ...(column === undefined ? {} : { column }), title: entry.title.trim().slice(0, 240), explanation: entry.explanation.trim().slice(0, 1_000), ...(typeof entry.suggestion === "string" && entry.suggestion.trim() ? { suggestion: entry.suggestion.trim().slice(0, 800) } : {}) }];
+});
 
 export const parseAgentAction = (content: string): ParsedAgentAction | null => {
   const trimmed = content.trim();
@@ -67,6 +77,10 @@ export const parseAgentAction = (content: string): ParsedAgentAction | null => {
     if (value.type === "tool_call" && typeof value.tool === "string" && toolNameSet.has(value.tool as AgentToolName)) {
       return { type: "tool_call", tool: value.tool as AgentToolName, arguments: value.arguments && typeof value.arguments === "object" && !Array.isArray(value.arguments) ? value.arguments as Record<string, unknown> : {} };
     }
+    if (value.type === "review") {
+      const findings = parseReviewFindings(value.findings);
+      return findings.length ? { type: "review", findings } : { type: "final", text: "No actionable findings were returned by the review." };
+    }
     if (value.type === "final" && typeof value.text === "string") return { type: "final", text: value.text };
   } catch {
     return { type: "final", text: trimmed };
@@ -83,7 +97,7 @@ const resultForModel = (result: { ok: boolean; summary: string; data?: unknown; 
   clip(JSON.stringify({ ok: result.ok, summary: result.summary, data: result.data, patch: result.patch, validation: result.validation }), MAX_INTERNAL_RESULT);
 
 const createContextInput = (request: AgentRequest): AIRequestInput => ({
-  action: modeAction[request.mode],
+  action: actionForRequest(request),
   prompt: request.userInstruction,
   currentFileId: request.currentFileId,
   selectedCode: request.selection?.code,
@@ -99,7 +113,7 @@ const collectCompletion = async (service: AIService, request: AgentRequest, sign
   if (request.settings.streaming && provider?.supportsStreaming) {
     let content = "";
     let complete: AICompletionResult | undefined;
-    for await (const event of service.stream(request.settings.provider, { messages: request.conversation, settings: request.settings, metadata: { workspaceId: request.workspaceId, action: modeAction[request.mode], language: request.language }, signal })) {
+    for await (const event of service.stream(request.settings.provider, { messages: request.conversation, settings: request.settings, metadata: { workspaceId: request.workspaceId, action: actionForRequest(request), language: request.language }, signal })) {
       if (signal.aborted) throw new AgentRuntimeError("CANCELLED", "Agent generation was cancelled");
       if (event.type === "delta" && event.content) content += event.content;
       if (event.type === "complete" && event.result) complete = event.result;
@@ -108,7 +122,7 @@ const collectCompletion = async (service: AIService, request: AgentRequest, sign
     if (complete) return complete;
     return { content, provider: request.settings.provider, model: request.settings.model };
   }
-  return service.complete(request.settings.provider, { messages: request.conversation, settings: request.settings, metadata: { workspaceId: request.workspaceId, action: modeAction[request.mode], language: request.language }, signal });
+  return service.complete(request.settings.provider, { messages: request.conversation, settings: request.settings, metadata: { workspaceId: request.workspaceId, action: actionForRequest(request), language: request.language }, signal });
 };
 
 const baseResult = (request: AgentRequest, events: AgentEvent[], patches: AgentResult["patches"], iterations: number, toolCalls: number, stoppedReason: AgentResult["stoppedReason"], usage?: AgentResult["usage"]): AgentResult => ({
@@ -120,7 +134,8 @@ const baseResult = (request: AgentRequest, events: AgentEvent[], patches: AgentR
   iterations,
   toolCalls,
   stoppedReason,
-  usage
+  usage,
+  taskId: request.taskId
 });
 
 export const executeAgent = async (
@@ -167,6 +182,10 @@ export const executeAgent = async (
       throw new AIProviderRequestError("The selected workspace context is too large. Choose a smaller context setting and try again.", "CONTEXT_TOO_LARGE");
     }
     emitStatus(`Preparing ${request.mode.toLowerCase()} mode for ${context.currentFile?.name ?? "the workspace"}`);
+    const recommendation = recommendProvider(service.getProviders(), actionForRequest(request));
+    const projectIndex = buildProjectIndex(room);
+    const relevant = selectRelevantFiles(room, request, projectIndex);
+    emit({ type: "context", files: relevant.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match" })), projectSummary: projectIndex.summary, ...(recommendation ? { recommendation: { ...recommendation, selected: recommendation.providerId === request.settings.provider && recommendation.model === request.settings.model } } : {}) });
     const toolContext: AgentToolContext = {
       room,
       request,
@@ -176,11 +195,16 @@ export const executeAgent = async (
     };
     const tools = (dependencies.createTools ?? createAgentToolRegistry)(toolContext);
     const messages: AIChatMessage[] = [
-      { role: "system", content: createAgentSystemPrompt(request.mode) },
+      { role: "system", content: createAgentSystemPrompt(request.mode, actionForRequest(request)) },
       ...request.conversation.slice(-8),
       createAgentUserMessage(request, context)
     ];
+    if (isComplexTask(request)) {
+      emit({ type: "plan", steps: createTaskPlan(request, relevant) });
+      messages.push({ role: "user", content: "A concise safe plan was recorded before execution. Continue with verified tool calls or a final answer." });
+    }
     let usage: AgentResult["usage"];
+    let review: AgentReviewFinding[] | undefined;
     let toolCalls = 0;
     for (let iteration = 1; iteration <= AGENT_MAX_ITERATIONS; iteration += 1) {
       if (controller.signal.aborted) throw new AgentRuntimeError(timedOut ? "TIMEOUT" : "CANCELLED", timedOut ? "Agent generation timed out" : "Agent generation was cancelled");
@@ -204,6 +228,13 @@ export const executeAgent = async (
         messages.push({ role: "user", content: "The plan is recorded. Continue with the next safe tool call or provide the final answer." });
         continue;
       }
+      if (action.type === "review") {
+        review = action.findings ?? [];
+        emit({ type: "review", findings: review });
+        const text = review.length ? review.map((finding) => `${finding.severity.toUpperCase()}: ${finding.title}${finding.file ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})` : ""}\n${finding.explanation}${finding.suggestion ? `\nSuggestion: ${finding.suggestion}` : ""}`).join("\n\n") : "No actionable findings were returned by the review.";
+        emit({ type: "final", text: clip(text, MAX_FINAL_TEXT) });
+        return { ...baseResult(request, events, patches, iteration, toolCalls, "completed", usage), finalText: clip(text, MAX_FINAL_TEXT), review };
+      }
       if (action.type === "final") {
         const text = clip(action.text ?? completion.content, MAX_FINAL_TEXT).trim();
         emit({ type: "final", text });
@@ -214,8 +245,11 @@ export const executeAgent = async (
       emit({ type: "tool_call", tool: action.tool!, summary: actionSummary(action.tool!, args) });
       const result = await runWithinDeadline(() => tools.run(action.tool!, args));
       if (result.patch) {
-        patches.push(result.patch);
-        emit({ type: "patch_proposal", patch: result.patch });
+        const findings = reviewPatch(result.patch);
+        const patch = findings.length ? { ...result.patch, review: findings } : result.patch;
+        patches.push(patch);
+        emit({ type: "patch_proposal", patch });
+        if (findings.length) emit({ type: "patch_review", patchId: patch.patchId, findings });
       }
       if (result.validation) {
         emit({ type: "validation", ...result.validation });

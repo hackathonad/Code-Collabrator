@@ -15,7 +15,7 @@ import type {
   WorkspaceOperation,
   UserIdentityKind
 } from "./roomTypes";
-import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, updateWorkspaceFileContent } from "./workspaceService";
+import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, MAX_WORKSPACE_CONTENT_LENGTH, updateWorkspaceFileContent } from "./workspaceService";
 import { markAgentProposalsStale } from "../agent/agentEvents";
 
 const rooms = new Map<string, RoomState>();
@@ -343,6 +343,36 @@ export const roomStore = {
       updatedBy: serializeParticipant(participant),
       historyEntry
     };
+  },
+
+  applyAgentPatchBatch(roomId: string, userId: string, changes: Array<{ fileId: string; content: string }>) {
+    const room = ensureRoom(roomId);
+    const participant = room.participants[userId];
+    if (!participant) throw new Error("Participant not found");
+    if (!canEditCode(participant.role)) throw new Error("Permission denied");
+    if (room.isPaused) throw new Error("Room editing is paused");
+    if (!changes.length || changes.length > 10) throw new Error("A patch must contain between one and ten files");
+    const fileIds = new Set<string>();
+    let totalDelta = 0;
+    for (const change of changes) {
+      if (fileIds.has(change.fileId)) throw new Error("A multi-file patch cannot contain duplicate files");
+      fileIds.add(change.fileId);
+      const file = room.workspace.files[change.fileId];
+      if (!file) throw new Error("Patch file was not found");
+      if (typeof change.content !== "string") throw new Error("Patch content is invalid");
+      totalDelta += change.content.length - file.content.length;
+    }
+    const currentLength = Object.values(room.workspace.files).reduce((total, file) => total + file.content.length, 0);
+    if (currentLength + totalDelta > MAX_WORKSPACE_CONTENT_LENGTH) throw new Error("Workspace content limit reached");
+    for (const change of changes) updateWorkspaceFileContent(room.workspace, change.fileId, change.content, userId);
+    room.workspace.activeFileId = changes[0].fileId;
+    syncLegacyEditorProjection(room);
+    room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
+    participant.editsCount += changes.length;
+    touchParticipantActivity(participant, room);
+    const historyEntry = maybeAddAutosaveEntry(room, participant);
+    return { room: serializeRoom(room), updatedBy: serializeParticipant(participant), historyEntry };
   },
 
   updateLanguage(roomId: string, userId: string, language: SupportedLanguage, resetCode: boolean) {

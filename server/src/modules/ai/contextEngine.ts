@@ -2,6 +2,7 @@ import type { RoomSnapshot, WorkspaceFile, WorkspaceState } from "../rooms/roomT
 import type { RepositorySummary } from "../git/gitTypes";
 import type { AIChatMessage, AIContextPayload, AIRequestInput } from "./aiTypes";
 import { isSafeWorkspaceFile } from "../agent/agentSecurity";
+import { buildProjectIndex, selectRelevantFiles } from "../agent/agentIntelligence";
 
 const SUMMARY_CACHE_TTL_MS = 15_000;
 const summaryCache = new Map<string, { expiresAt: number; value: string }>();
@@ -52,19 +53,12 @@ const compactWorkspaceSummary = (workspace: WorkspaceState) => {
   summaryCache.set(cacheKey, { expiresAt: Date.now() + SUMMARY_CACHE_TTL_MS, value }); return value;
 };
 
-const relevantOpenFiles = (workspace: WorkspaceState, input: AIRequestInput, currentFileId: string) => {
-  const words = input.prompt.toLowerCase().match(/[a-z0-9_.-]{3,}/g) ?? [];
-  return workspace.openFileIds.filter((id) => id !== currentFileId).map((id) => workspace.files[id]).filter((file): file is WorkspaceFile => Boolean(file) && isSafeFile(workspace, file)).sort((left, right) => {
-    const leftScore = words.some((word) => left.name.toLowerCase().includes(word)) ? 1 : 0;
-    const rightScore = words.some((word) => right.name.toLowerCase().includes(word)) ? 1 : 0;
-    return rightScore - leftScore;
-  });
-};
-
 export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, repository: RepositorySummary | null): AIContextPayload => {
   // Reserve space for the JSON envelope, labels and accounting metadata. Every
   // user-controlled text section is then charged against the remaining budget.
   const workspace = room.workspace; const budget = AI_CONTEXT_BUDGETS[input.settings.workspaceContextSize]; let remaining = Math.max(0, budget - 1_200); let truncated = false;
+  const projectIndex = buildProjectIndex(room);
+  const rankedFiles = selectRelevantFiles(room, { ...input, userInstruction: input.prompt, intent: input.action, currentFileId: input.currentFileId, relevantFiles: input.relevantFiles, diagnostics: input.diagnostics }, projectIndex);
   const includedSections: string[] = []; const excludedSections: string[] = [];
   const include = (section: string, value: string, preferredLimit: number) => {
     if (!value || remaining <= 0) { if (value) excludedSections.push(section); return ""; }
@@ -79,10 +73,14 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   const diagnostics = boundedDiagnostics(input.diagnostics);
   const diagnosticsText = include("editor diagnostics", diagnostics.length ? JSON.stringify(diagnostics) : "No editor diagnostics were provided.", 2_600);
   const includedDiagnostics = diagnosticsText && !diagnosticsText.includes("[...truncated for context budget]") ? diagnostics : [];
+  const projectIndexSummary = include("project index", projectIndex.summary, 3_200);
+  const relevantFileText = include("relevant file map", JSON.stringify(rankedFiles.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", "), score: entry.score }))), 1_800);
   if (currentFile && currentRaw) currentFile.content = include(`current file: ${currentFile.name}`, currentRaw.content, input.settings.workspaceContextSize === "minimal" ? 3_000 : input.settings.workspaceContextSize === "extended" ? 14_000 : 7_000);
   const execution = input.execution?.output ? { output: include("execution output", input.execution.output, 5_000), failed: input.execution.failed } : undefined;
-  const openFiles = relevantOpenFiles(workspace, input, currentFile?.id ?? "").slice(0, input.settings.workspaceContextSize === "extended" ? 4 : 2).flatMap((file) => {
-    const content = include(`open file: ${file.name}`, file.content, input.settings.workspaceContextSize === "extended" ? 4_000 : 2_000);
+  const openFiles = rankedFiles.filter((entry) => entry.file.id !== currentFile?.id).slice(0, input.settings.workspaceContextSize === "extended" ? 6 : 3).flatMap((entry) => {
+    const file = workspace.files[entry.file.id];
+    if (!file) return [];
+    const content = include(`relevant file: ${entry.file.path}`, file.content, input.settings.workspaceContextSize === "extended" ? 4_000 : 2_000);
     return content ? [{ id: file.id, name: file.name, language: file.language, content }] : [];
   });
   const workspaceSummary = include("workspace structure", compactWorkspaceSummary(workspace), 3_500);
@@ -92,7 +90,8 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   const chatText = include("recent room chat", room.chat.slice(-4).map((message) => trimWithMarker(`${message.username}: ${message.message}`, 500).value).join("\n"), 1_200);
   const recentHistory = historyText ? historyText.split("\n") : [];
   const recentChat: AIChatMessage[] = chatText ? chatText.split("\n").map((content) => ({ role: "user", content })) : [];
-  const context: AIContextPayload = { roomId: room.roomId, workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, editorVersion: room.version, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, roomMetadata, recentChat, recentHistory, diagnostics: includedDiagnostics, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
+  const relevantFiles = relevantFileText ? rankedFiles.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match", score: entry.score })) : [];
+  const context: AIContextPayload = { roomId: room.roomId, workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, editorVersion: room.version, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, projectIndexSummary: projectIndexSummary || "Project index was unavailable.", relevantFiles, roomMetadata, recentChat, recentHistory, diagnostics: includedDiagnostics, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
   context.characterCount = JSON.stringify(context).length;
   // The 1,200-character envelope reserve above is intentionally conservative,
   // but keep the accounting value truthful if future metadata grows.

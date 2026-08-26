@@ -6,7 +6,9 @@ import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
 import { emitAgentWorkspaceChange, getAgentProposal, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import type { AgentDiagnostic, AgentMode, AgentPatch, AgentRequest } from "../modules/agent/agentTypes";
+import { getAgentTaskHistory, recordTaskPatches, recordTaskValidation, startAgentTask, taskStatusForResult, updateAgentTask } from "../modules/agent/agentTaskHistory";
+import { createValidationRunner } from "../modules/agent/validationRunner";
+import type { AgentDiagnostic, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
@@ -16,6 +18,8 @@ const requestWindows = new Map<string, { startedAt: number; count: number }>();
 const REQUEST_WINDOW_MS = 60_000;
 const REQUEST_LIMIT = 12;
 const modes = new Set<AgentMode>(["ASK", "EDIT", "DEBUG", "EXPLAIN"]);
+const intents = new Set(["explain", "generate", "fix", "optimize", "refactor", "test", "document", "summarize", "review", "error", "custom"]);
+const validationCategories = new Set<ValidationCategory>(["typecheck", "lint", "tests", "build"]);
 const providers = new Set<AIProviderId>(["gemini", "groq", "openrouter", "ollama", "openai", "anthropic", "custom"]);
 const clip = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : "";
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -89,6 +93,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
   const room = roomStore.getRoomSnapshot(roomId);
   const settings = parseSettings(body.settings);
   const mode = typeof body.mode === "string" && modes.has(body.mode as AgentMode) ? body.mode as AgentMode : "ASK";
+  const intent = typeof body.intent === "string" && intents.has(body.intent) ? body.intent as AgentRequest["intent"] : undefined;
   if (!settings) throw new AgentRouteError(400, "A valid AI provider, model, and settings are required");
   const currentFileId = typeof body.currentFileId === "string" && room.workspace.files[body.currentFileId] ? body.currentFileId : room.workspace.activeFileId;
   const selectedCode = typeof body.selectedCode === "string" ? body.selectedCode.slice(0, 12_000) : "";
@@ -110,6 +115,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
     conversation: parseConversation(body.conversation),
     execution,
     diagnostics: parseDiagnostics(body.diagnostics),
+    intent,
     mode,
     language: activeFile?.language ?? room.language,
     settings,
@@ -128,22 +134,29 @@ const sendError = (response: Response, error: unknown) => {
 
 const approvedPatchFromBody = (body: Record<string, unknown>): AgentPatch & { suppliedPatchId?: string } => {
   const raw = isRecord(body.patch) ? body.patch : body;
+  const rawFiles = Array.isArray(raw.files) ? raw.files.slice(0, 10).flatMap((entry): AgentPatchFile[] => {
+    if (!isRecord(entry) || typeof entry.fileId !== "string" || typeof entry.path !== "string" || typeof entry.expectedContent !== "string" || typeof entry.replacement !== "string") return [];
+    return [{ fileId: entry.fileId.slice(0, 128), path: entry.path.slice(0, 260), expectedContent: entry.expectedContent, replacement: entry.replacement, additions: typeof entry.additions === "number" ? entry.additions : 0, deletions: typeof entry.deletions === "number" ? entry.deletions : 0, preview: typeof entry.preview === "string" ? entry.preview.slice(0, 8_000) : "" }];
+  }) : undefined;
+  const primary = rawFiles?.[0];
   const patch = {
     patchId: clip(raw.patchId, 64),
+    ...(typeof raw.taskId === "string" ? { taskId: raw.taskId.slice(0, 64) } : {}),
     roomId: clip(raw.roomId, 32),
     workspaceId: clip(raw.workspaceId, 128),
-    fileId: clip(raw.fileId, 128),
-    path: clip(raw.path, 260),
+    fileId: clip(raw.fileId ?? primary?.fileId, 128),
+    path: clip(raw.path ?? primary?.path, 260),
     baseVersion: typeof raw.baseVersion === "number" && Number.isInteger(raw.baseVersion) ? raw.baseVersion : -1,
-    expectedContent: typeof raw.expectedContent === "string" ? raw.expectedContent : typeof raw.expectedOldContent === "string" ? raw.expectedOldContent : "",
-    replacement: typeof raw.replacement === "string" ? raw.replacement : "",
+    expectedContent: typeof raw.expectedContent === "string" ? raw.expectedContent : primary?.expectedContent ?? "",
+    replacement: typeof raw.replacement === "string" ? raw.replacement : primary?.replacement ?? "",
     additions: 0,
     deletions: 0,
     preview: "",
     applied: false,
-    status: "pending" as const
+    status: "pending" as const,
+    ...(rawFiles?.length ? { files: rawFiles } : {})
   };
-  if (!patch.patchId || !patch.path || patch.baseVersion < 1 || patch.expectedContent === "" || typeof raw.replacement !== "string") throw new AgentRouteError(400, "An approved patch requires patchId, baseVersion, path, expectedContent, and replacement");
+  if (!patch.patchId || !patch.path || patch.baseVersion < 1 || patch.expectedContent === "" || (typeof raw.replacement !== "string" && !primary)) throw new AgentRouteError(400, "An approved patch requires patchId, baseVersion, path, expectedContent, and replacement");
   return { ...patch, suppliedPatchId: patch.patchId || undefined };
 };
 
@@ -153,7 +166,14 @@ const proposalMatches = (stored: AgentPatch, supplied: AgentPatch) => stored.roo
   && stored.path === supplied.path
   && stored.baseVersion === supplied.baseVersion
   && stored.expectedContent === supplied.expectedContent
-  && stored.replacement === supplied.replacement;
+  && stored.replacement === supplied.replacement
+  && stored.taskId === supplied.taskId
+  && (stored.files?.length ?? 0) === (supplied.files?.length ?? 0)
+  && (stored.files ?? []).every((file, index) => {
+    const other = supplied.files?.[index];
+    if (!other) return false;
+    return file.fileId === other.fileId && file.path === other.path && file.expectedContent === other.expectedContent && file.replacement === other.replacement;
+  });
 
 const publishProposals = (userId: string, patches: AgentPatch[]) => {
   patches.forEach((patch) => registerAgentProposal(patch, userId));
@@ -176,12 +196,18 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
   const controller = new AbortController();
   const abortRequest = () => controller.abort();
   request.once("close", abortRequest);
+  let taskId: string | undefined;
   try {
     const prepared = await prepareRequest(request as GuestRequest);
-    const result = await executeAgent(prepared.agent, prepared.room, undefined, {}, controller.signal);
+    const task = startAgentTask(prepared.agent);
+    taskId = task.taskId;
+    updateAgentTask(taskId, { status: "running" });
+    const result = await executeAgent({ ...prepared.agent, taskId }, prepared.room, undefined, {}, controller.signal);
     publishProposals(prepared.agent.userId, result.patches);
+    recordTaskPatches(taskId, result.patches);
+    updateAgentTask(taskId, { status: taskStatusForResult(result.stoppedReason) });
     response.json({ ok: true, result });
-  } catch (error) { if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
+  } catch (error) { if (taskId) updateAgentTask(taskId, { status: "failed" }); if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
   finally { request.off("close", abortRequest); }
 });
 
@@ -194,19 +220,63 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
   response.setHeader("Connection", "keep-alive");
   response.flushHeaders();
   const controller = new AbortController();
+  const task = startAgentTask(prepared.agent);
+  const taskId = task.taskId;
+  updateAgentTask(taskId, { status: "running" });
   const abortIfDisconnected = () => { if (!response.writableEnded) controller.abort(); };
   response.once("close", abortIfDisconnected);
   try {
-    await executeAgent(prepared.agent, prepared.room, (event) => {
+    const result = await executeAgent({ ...prepared.agent, taskId }, prepared.room, (event) => {
       if (event.type === "patch_proposal") registerAgentProposal(event.patch, prepared.agent.userId);
       if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify(event)}\n\n`);
     }, {}, controller.signal);
+    recordTaskPatches(taskId, result.patches);
+    updateAgentTask(taskId, { status: taskStatusForResult(result.stoppedReason) });
   } catch (error) {
+    updateAgentTask(taskId, { status: "failed" });
     if (!controller.signal.aborted && !response.writableEnded) response.write(`data: ${JSON.stringify({ type: "error", code: error instanceof AIProviderRequestError || error instanceof AIProviderUnavailableError ? error.code : "AGENT_ERROR", message: error instanceof Error ? error.message : "Unable to stream the coding-agent response" })}\n\n`);
   } finally {
     response.off("close", abortIfDisconnected);
     response.end();
   }
+});
+
+router.get("/rooms/:roomId/agent/history", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const guestToken = typeof request.query.guestToken === "string" ? request.query.guestToken : undefined;
+    const userId = verifyGuestSessionToken(roomId, guestToken);
+    if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    const history = getAgentTaskHistory(roomId, userId).map(({ taskId, roomId: taskRoomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }) => ({ taskId, roomId: taskRoomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }));
+    response.json({ ok: true, tasks: history });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/validate", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const category = typeof body.category === "string" && validationCategories.has(body.category as ValidationCategory) ? body.category as ValidationCategory : null;
+    if (!roomId || !userId || !category) throw new AgentRouteError(400, "A valid room session and validation category are required");
+    if (!rateLimit(`${roomId}:${userId}:validate`)) throw new AgentRouteError(429, "Validation limit reached. Please wait a moment.", "RATE_LIMITED");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    const taskId = typeof body.taskId === "string" ? body.taskId.slice(0, 64) : "";
+    const task = taskId && getAgentTaskHistory(roomId, userId).some((entry) => entry.taskId === taskId) ? taskId : undefined;
+    if (task) recordTaskValidation(task, "running");
+    let validation: AgentValidationSummary;
+    try {
+      const result = await createValidationRunner()(category);
+      validation = { category, status: result.ok ? "passed" : "failed", summary: result.summary, output: [result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 12_000), durationMs: result.durationMs };
+    } catch (error) {
+      validation = { category, status: "unavailable", summary: error instanceof Error ? error.message : "Validation was unavailable" };
+    }
+    if (task) recordTaskValidation(task, validation.status);
+    response.status(validation.status === "passed" ? 200 : 422).json({ ok: validation.status === "passed", validation, taskId: task });
+  } catch (error) { sendError(response, error); }
 });
 
 router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response) => {
@@ -226,6 +296,7 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     if (!stored || stored.userId !== userId || stored.patch.roomId !== roomId || !proposalMatches(stored.patch, patch)) throw new AgentRouteError(409, "The proposal is no longer available for this room session", "PATCH_CONFLICT");
     if (stored.status === "proposal_stale" || patch.baseVersion !== room.version) {
       updateAgentProposal(patch.patchId, "proposal_stale", room.version);
+      if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "stale" });
       throw new AgentRouteError(409, "This proposal is stale because the room changed. Generate a new proposal.", "PATCH_STALE");
     }
     if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
@@ -243,11 +314,15 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     }).run("APPLY_PATCH", patch);
     if (!appliedResult.ok || !appliedResult.patch) {
       const currentVersion = roomStore.getRoomSnapshot(roomId).version;
-      if (currentVersion !== patch.baseVersion) updateAgentProposal(patch.patchId, "proposal_stale", currentVersion);
+      if (currentVersion !== patch.baseVersion) {
+        updateAgentProposal(patch.patchId, "proposal_stale", currentVersion);
+        if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "stale" });
+      }
       throw new AgentRouteError(409, appliedResult.summary, currentVersion !== patch.baseVersion ? "PATCH_STALE" : "PATCH_CONFLICT");
     }
     await roomPersistence.saveRoom(roomStore.getRoomSnapshot(roomId));
     updateAgentProposal(patch.patchId, "proposal_applied", appliedResult.patch.baseVersion + 1);
+    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "applied" });
     response.json({ ok: true, patch: appliedResult.patch, room: roomStore.getRoomSnapshot(roomId) });
   } catch (error) { sendError(response, error); }
 });
@@ -270,6 +345,7 @@ router.post("/rooms/:roomId/agent/proposal", guestSession, async (request, respo
     }
     if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
     updateAgentProposal(patchId, "proposal_rejected");
+    if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { patchStatus: "rejected" });
     response.json({ ok: true, status: "rejected", patchId });
   } catch (error) { sendError(response, error); }
 });

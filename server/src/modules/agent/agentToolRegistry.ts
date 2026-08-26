@@ -12,8 +12,11 @@ import {
   workspacePathForFile
 } from "./agentSecurity";
 import { createValidationRunner } from "./validationRunner";
+import { buildProjectIndex, projectIndexForContext } from "./agentIntelligence";
+import { getAgentTaskHistory } from "./agentTaskHistory";
 import type {
   AgentPatch,
+  AgentPatchFile,
   AgentToolContext,
   AgentToolName,
   AgentToolRegistry,
@@ -26,9 +29,11 @@ const MAX_PATCH_PART = 30_000;
 const MAX_SEARCH_RESULTS = 50;
 const MAX_LIST_RESULTS = 200;
 const MAX_TOOL_OUTPUT = 24_000;
+const MAX_PATCH_FILES = 10;
+const MAX_PATCH_TOTAL = 60_000;
 const toolNames: AgentToolName[] = [
   "READ_FILE", "LIST_FILES", "SEARCH_CODE", "GET_CURRENT_FILE", "GET_SELECTION",
-  "GET_WORKSPACE_SUMMARY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
+  "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
 ];
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -125,6 +130,16 @@ const getWorkspaceSummary = (context: AgentToolContext): AgentToolResult => {
   return { ok: true, summary: `Workspace ${workspace.name} has ${visibleFiles.length} visible file(s)`, data: { id: workspace.id, name: workspace.name, language: workspace.language, files: visibleFiles.slice(0, 100).map((file) => ({ path: workspacePathForFile(workspace, file), language: file.language, size: file.content.length })), fileCount: Object.keys(workspace.files).length, folderCount: Object.keys(workspace.folders).length, languages, currentFile: (() => { try { return fileInfo(context, currentFile(context)); } catch { return null; } })(), openFileCount: workspace.openFileIds.length, recentHistory: context.room.history.slice(0, 5).map((entry) => ({ reason: entry.reason, fileId: entry.fileId, createdBy: entry.createdByUsername })), roomVersion: context.room.version } };
 };
 
+const getProjectIndex = (context: AgentToolContext): AgentToolResult => {
+  const index = buildProjectIndex(context.room);
+  return { ok: true, summary: index.summary, data: { ...projectIndexForContext(index), workspaceId: index.workspaceId, version: index.version, generatedAt: index.generatedAt } };
+};
+
+const getTaskHistory = (context: AgentToolContext): AgentToolResult => {
+  const history = getAgentTaskHistory(context.room.roomId, context.request.userId).map(({ taskId, roomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, mode, intent, summary, status, patchStatus, validationStatus, patchCount, createdAt, updatedAt }));
+  return { ok: true, summary: `Found ${history.length} recent coding-agent task(s)`, data: { tasks: history } };
+};
+
 const getDiagnostics = (context: AgentToolContext): AgentToolResult => {
   const diagnostics = context.request.diagnostics ?? [];
   const execution = context.request.execution?.output ? { output: redacted(context.request.execution.output).slice(0, 6_000), failed: context.request.execution.failed } : undefined;
@@ -136,39 +151,66 @@ const getDiagnostics = (context: AgentToolContext): AgentToolResult => {
   };
 };
 
-const makePatch = (context: AgentToolContext, path: string, expectedContent: string, replacement: string, applied: boolean): AgentPatch => {
-  const file = safeFileOrThrow(context, path);
-  const stats = countLineChanges(expectedContent, replacement);
-  const preview = `--- ${path}\n+++ ${path}\n- ${expectedContent.slice(0, 3_800).replace(/\n/g, "\n- ")}\n+ ${replacement.slice(0, 3_800).replace(/\n/g, "\n+ ")}`;
-  return { patchId: patchIdFor(context.room.roomId, file.id, expectedContent, replacement), roomId: context.room.roomId, workspaceId: context.room.workspace.id, fileId: file.id, path, baseVersion: context.room.version, expectedContent, replacement, ...stats, preview: clip(preview, 8_000), applied, status: applied ? "applied" : "pending" };
+interface PatchChange { file: WorkspaceFile; path: string; expectedContent: string; replacement: string; }
+
+const parsePatchChanges = (context: AgentToolContext, args: Record<string, unknown>): PatchChange[] | null => {
+  const rawChanges = Array.isArray(args.changes) ? args.changes : Array.isArray(args.files) ? args.files : [args];
+  if (!rawChanges.length || rawChanges.length > MAX_PATCH_FILES) return null;
+  const seen = new Set<string>();
+  const changes: PatchChange[] = [];
+  let total = 0;
+  for (const raw of rawChanges) {
+    if (!isRecord(raw)) return null;
+    const rawPath = stringArg(raw, "path", 260);
+    const expectedContent = typeof raw.expectedContent === "string" ? raw.expectedContent : typeof raw.expectedOldContent === "string" ? raw.expectedOldContent : null;
+    const replacement = typeof raw.replacement === "string" ? raw.replacement : null;
+    if (rawPath === null || expectedContent === null || replacement === null || expectedContent.length > MAX_PATCH_PART || replacement.length > MAX_PATCH_PART || !expectedContent || containsSensitiveContent(replacement)) return null;
+    const path = normalizeWorkspacePath(rawPath);
+    if (seen.has(path)) return null;
+    const file = safeFileOrThrow(context, path);
+    seen.add(path); total += expectedContent.length + replacement.length;
+    if (total > MAX_PATCH_TOTAL) return null;
+    changes.push({ file, path, expectedContent, replacement });
+  }
+  return changes;
+};
+
+const patchFile = (change: PatchChange): AgentPatchFile => {
+  const stats = countLineChanges(change.expectedContent, change.replacement);
+  const preview = `--- ${change.path}\n+++ ${change.path}\n- ${change.expectedContent.slice(0, 3_800).replace(/\n/g, "\n- ")}\n+ ${change.replacement.slice(0, 3_800).replace(/\n/g, "\n+ ")}`;
+  return { fileId: change.file.id, path: change.path, expectedContent: change.expectedContent, replacement: change.replacement, ...stats, preview: clip(preview, 8_000) };
+};
+
+const makePatch = (context: AgentToolContext, changes: PatchChange[], applied: boolean): AgentPatch => {
+  const first = changes[0];
+  const files = changes.map(patchFile);
+  const stats = files.reduce((total, file) => ({ additions: total.additions + file.additions, deletions: total.deletions + file.deletions }), { additions: 0, deletions: 0 });
+  const preview = clip(files.map((file) => file.preview).join("\n\n"), 12_000);
+  const patchId = patchIdFor(context.room.roomId, files.map((file) => file.fileId).join(","), JSON.stringify(files.map((file) => file.expectedContent)), JSON.stringify(files.map((file) => file.replacement)));
+  return { patchId, ...(context.request.taskId ? { taskId: context.request.taskId } : {}), roomId: context.room.roomId, workspaceId: context.room.workspace.id, fileId: first.file.id, path: first.path, baseVersion: context.room.version, expectedContent: first.expectedContent, replacement: first.replacement, ...stats, preview, applied, status: applied ? "applied" : "pending", ...(files.length > 1 ? { files } : {}) };
 };
 
 const applyPatch = (context: AgentToolContext, args: Record<string, unknown>): AgentToolResult => {
-  const rawPath = stringArg(args, "path", 260);
-  const expectedContent = typeof args.expectedContent === "string" ? args.expectedContent : typeof args.expectedOldContent === "string" ? args.expectedOldContent : null;
-  const replacement = typeof args.replacement === "string" ? args.replacement : null;
-  if (rawPath === null || expectedContent === null || replacement === null) return { ok: false, summary: "APPLY_PATCH requires path, expectedContent, and replacement" };
-  if (expectedContent.length > MAX_PATCH_PART || replacement.length > MAX_PATCH_PART) return { ok: false, summary: "The patch is larger than the allowed limit" };
-  if (containsSensitiveContent(replacement)) return { ok: false, summary: "The patch appears to contain a secret and was blocked" };
   const authoritativeRoom = context.allowPatchApplication ? roomStore.getRoomSnapshot(context.room.roomId) : context.room;
   const authoritativeContext = authoritativeRoom === context.room ? context : { ...context, room: authoritativeRoom };
   const suppliedBaseVersion = typeof args.baseVersion === "number" && Number.isInteger(args.baseVersion) ? args.baseVersion : context.room.version;
   if (context.allowPatchApplication && suppliedBaseVersion !== authoritativeRoom.version) return { ok: false, summary: "Patch conflict: the room changed after this proposal was created" };
-  const path = normalizeWorkspacePath(rawPath);
-  const file = safeFileOrThrow(authoritativeContext, path);
-  if (!expectedContent) return { ok: false, summary: "An empty expectedContent is not a stable patch anchor" };
-  const first = file.content.indexOf(expectedContent);
-  const second = first < 0 ? -1 : file.content.indexOf(expectedContent, first + expectedContent.length);
-  if (first < 0) return { ok: false, summary: `Patch conflict: expected content was not found in ${path}` };
-  if (second >= 0) return { ok: false, summary: `Patch is ambiguous: expected content occurs more than once in ${path}` };
-  const nextContent = `${file.content.slice(0, first)}${replacement}${file.content.slice(first + expectedContent.length)}`;
-  const proposed = makePatch(authoritativeContext, path, expectedContent, replacement, false);
-  if (!context.allowPatchApplication) return { ok: true, summary: `Prepared a patch proposal for ${path}`, patch: proposed, data: { patch: proposed } };
-  const result = roomStore.updateCode(authoritativeRoom.roomId, context.request.userId, nextContent, file.id);
-  const updatedFile = result.room.workspace.files[file.id] ?? file;
+  const changes = parsePatchChanges(authoritativeContext, args);
+  if (!changes) return { ok: false, summary: "APPLY_PATCH requires one stable change or a bounded changes array" };
+  const nextChanges: Array<PatchChange & { content: string }> = [];
+  for (const change of changes) {
+    const first = change.file.content.indexOf(change.expectedContent);
+    const second = first < 0 ? -1 : change.file.content.indexOf(change.expectedContent, first + change.expectedContent.length);
+    if (first < 0) return { ok: false, summary: `Patch conflict: expected content was not found in ${change.path}` };
+    if (second >= 0) return { ok: false, summary: `Patch is ambiguous: expected content occurs more than once in ${change.path}` };
+    nextChanges.push({ ...change, content: `${change.file.content.slice(0, first)}${change.replacement}${change.file.content.slice(first + change.expectedContent.length)}` });
+  }
+  const proposed = makePatch(authoritativeContext, changes, false);
+  if (!context.allowPatchApplication) return { ok: true, summary: `Prepared a patch proposal for ${changes.length} file(s)`, patch: proposed, data: { patch: proposed } };
+  const result = roomStore.applyAgentPatchBatch(authoritativeRoom.roomId, context.request.userId, nextChanges.map((change) => ({ fileId: change.file.id, content: change.content })));
   const applied = { ...proposed, applied: true, status: "applied" as const };
-  context.onWorkspaceChanged?.(result.room, updatedFile, applied);
-  return { ok: true, summary: `Applied the approved patch to ${path}`, patch: applied, data: { patch: applied, version: result.room.version } };
+  for (const change of changes) context.onWorkspaceChanged?.(result.room, result.room.workspace.files[change.file.id] ?? change.file, applied);
+  return { ok: true, summary: `Applied the approved patch to ${changes.length} file(s)`, patch: applied, data: { patch: applied, version: result.room.version } };
 };
 
 const runValidation = async (context: AgentToolContext, args: Record<string, unknown>): Promise<AgentToolResult> => {
@@ -192,10 +234,13 @@ export const createAgentToolRegistry = (context: AgentToolContext): AgentToolReg
         case "GET_CURRENT_FILE": return getCurrentFile(context);
         case "GET_SELECTION": return getSelection(context);
         case "GET_WORKSPACE_SUMMARY": return getWorkspaceSummary(context);
+        case "GET_PROJECT_INDEX": return getProjectIndex(context);
+        case "GET_TASK_HISTORY": return getTaskHistory(context);
         case "GET_DIAGNOSTICS": return getDiagnostics(context);
         case "APPLY_PATCH": return applyPatch(context, rawArgs);
         case "RUN_VALIDATION": return await runValidation(context, rawArgs);
       }
+      return { ok: false, summary: "Unknown agent tool" };
     } catch (error) {
       return { ok: false, summary: error instanceof Error ? error.message : "The agent tool could not complete" };
     }
