@@ -139,6 +139,7 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       });
       socket.on("agent:task_history", (tasks: AgentTaskPublic[]) => useAIStore.getState().setAgentTaskHistory(tasks));
       socket.on("agent:proposal_history", (events: AgentProposalEvent[]) => useAIStore.getState().setAgentProposalHistory(events));
+      socket.on("agent:proposal_state", (proposals: import("../types/agent").AgentProposalPublic[]) => useAIStore.getState().setAgentProposalState(proposals));
 
       socket.on("room:deleted", () => {
         void useMediaStore.getState().leave();

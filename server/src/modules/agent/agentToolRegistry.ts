@@ -148,7 +148,7 @@ const getPackageInfo = (context: AgentToolContext): AgentToolResult => {
 };
 
 const getTaskHistory = (context: AgentToolContext): AgentToolResult => {
-  const history = getAgentTaskHistory(context.room.roomId).map(({ taskId, roomId, conversationId, mode, intent, classification, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, ...(conversationId ? { conversationId } : {}), mode, intent, ...(classification ? { classification } : {}), summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
+  const history = getAgentTaskHistory(context.room.roomId).map(({ taskId, roomId, conversationId, mode, intent, classification, initiatorLabel, summary, status, patchStatus, validationStatus, validationSummary, patchCount, createdAt, updatedAt }) => ({ taskId, roomId, ...(conversationId ? { conversationId } : {}), mode, intent, ...(classification ? { classification } : {}), ...(initiatorLabel ? { initiatorLabel } : {}), summary, status, patchStatus, validationStatus, ...(validationSummary ? { validationSummary } : {}), patchCount, createdAt, updatedAt }));
   return { ok: true, summary: `Found ${history.length} recent coding-agent task(s)`, data: { tasks: history } };
 };
 
@@ -230,7 +230,7 @@ const runValidation = async (context: AgentToolContext, args: Record<string, unk
   if (!category || !["typecheck", "lint", "tests", "build"].includes(category)) return { ok: false, summary: "RUN_VALIDATION accepts only typecheck, lint, tests, or build" };
   const result = await (context.validationRunner ?? createValidationRunner())(category, context.signal);
   const output = clip(redacted([result.stdout, result.stderr].filter(Boolean).join("\n")), 12_000);
-  const status = result.cancelled ? "skipped" : result.timedOut ? "unavailable" : result.ok ? "passed" : "failed";
+  const status = result.cancelled ? "cancelled" : result.timedOut ? "unavailable" : result.ok ? "passed" : "failed";
   return { ok: result.ok, summary: result.summary, validation: { category, ok: result.ok, status, summary: result.summary, output }, data: { category, ok: result.ok, status, exitCode: result.exitCode, timedOut: result.timedOut, cancelled: result.cancelled, durationMs: result.durationMs, output } };
 };
 

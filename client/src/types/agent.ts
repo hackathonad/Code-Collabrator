@@ -7,7 +7,7 @@ export type AgentToolName = "READ_FILE" | "LIST_FILES" | "SEARCH_CODE" | "GET_CU
 export type ValidationCategory = "typecheck" | "lint" | "tests" | "build";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
-export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable";
+export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable" | "cancelled";
 
 export interface AgentDiagnostic {
   fileId?: string;
@@ -91,6 +91,7 @@ export interface AgentTaskPublic {
   mode: AgentMode;
   intent: AIAction;
   classification?: AgentTaskClassification;
+  initiatorLabel?: string;
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
@@ -104,6 +105,23 @@ export interface AgentTaskPublic {
 export interface AgentTaskEvent {
   type: "task_started" | "task_updated";
   task: AgentTaskPublic;
+}
+
+export interface AgentProposalPublic {
+  patchId: string;
+  taskId?: string;
+  roomId: string;
+  workspaceId: string;
+  fileId: string;
+  path: string;
+  baseVersion: number;
+  additions: number;
+  deletions: number;
+  preview: string;
+  applied: boolean;
+  status: AgentProposalStatus;
+  files: Array<{ fileId: string; path: string; additions: number; deletions: number }>;
+  review?: AgentReviewFinding[];
 }
 
 export interface AgentProposalEvent {
@@ -149,6 +167,7 @@ export interface AgentRequestPayload {
   diagnostics?: AgentDiagnostic[];
   intent?: AIAction;
   taskId?: string;
+  continuationTaskId?: string;
   conversationId?: string;
   continuitySummary?: string;
   conversation: Array<{ role: "user" | "assistant"; content: string }>;

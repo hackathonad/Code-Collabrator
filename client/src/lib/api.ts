@@ -1,7 +1,7 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 import type { RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
-import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
+import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import { storage } from "./storage";
 
@@ -345,6 +345,18 @@ export const api = {
     const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
     const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/history?${query.toString()}`));
     return (await readJson<{ ok: true; tasks: AgentTaskPublic[] }>(response)).tasks;
+  },
+
+  async getAgentProposals(roomId: string, guestToken: string | undefined) {
+    const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/proposals?${query.toString()}`));
+    return (await readJson<{ ok: true; proposals: AgentProposalPublic[] }>(response)).proposals;
+  },
+
+  async getAgentProposal(roomId: string, guestToken: string | undefined, patchId: string) {
+    const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/proposals/${encodeURIComponent(patchId)}?${query.toString()}`));
+    return await readJson<{ ok: true; patch: AgentPatch; status: string }>(response);
   },
 
   async cancelAgentTask(roomId: string, guestToken: string | undefined, taskId: string) {

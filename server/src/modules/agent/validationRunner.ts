@@ -44,14 +44,15 @@ export const createValidationRunner = (options: { cwd?: string; timeoutMs?: numb
   const abort = () => { cancelled = true; child.kill("SIGTERM"); };
   const timer = setTimeout(() => { timedOut = true; child.kill("SIGTERM"); }, timeoutMs);
   signal?.addEventListener("abort", abort, { once: true });
-  const exitCode = await new Promise<number | null>((resolve, reject) => {
-    child.once("error", reject);
+  let spawnError = false;
+  const exitCode = await new Promise<number | null>((resolve) => {
+    child.once("error", () => { spawnError = true; resolve(null); });
     child.once("close", (code) => resolve(code));
   }).finally(() => {
     clearTimeout(timer);
     signal?.removeEventListener("abort", abort);
   });
-  const ok = !timedOut && !cancelled && exitCode === 0;
+  const ok = !timedOut && !cancelled && !spawnError && exitCode === 0;
   return {
     category,
     ok,
@@ -61,6 +62,6 @@ export const createValidationRunner = (options: { cwd?: string; timeoutMs?: numb
     stdout,
     stderr,
     durationMs: Date.now() - startedAt,
-    summary: timedOut ? `${category} timed out` : cancelled ? `${category} cancelled` : ok ? `${category} passed` : `${category} failed (exit ${exitCode ?? "unknown"})`
+    summary: timedOut ? `${category} timed out` : cancelled ? `${category} cancelled` : spawnError ? `${category} unavailable: validation could not start` : ok ? `${category} passed` : `${category} failed (exit ${exitCode ?? "unknown"})`
   } satisfies ValidationRunResult;
 };

@@ -16,7 +16,7 @@ import mediaRoutes from "./routes/mediaRoutes";
 import { roomPersistence } from "./services/roomPersistence";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
-const API_RATE_LIMIT_MAX_REQUESTS = 180;
+const API_RATE_LIMIT_MAX_REQUESTS = env.apiRateLimit;
 const apiRateLimit = new Map<string, { startedAt: number; count: number }>();
 
 const apiLimiter: express.RequestHandler = (request, response, next) => {
@@ -66,7 +66,17 @@ export const createApp = () => {
   app.get("/health", (_request, response) => response.json({ ok: true, service: "code-collaborator", timestamp: new Date().toISOString() }));
   app.get("/ready", async (_request, response) => {
     const persistence = await roomPersistence.checkReadiness();
-    response.status(200).json({ ok: true, persistence, features: featureAvailability() });
+    const providers = aiService.getProviders().map(({ id, label, configured, available, health, models, defaultModel, capabilities, supportsStreaming, supportsToolCalling }) => ({ id, label, configured, available, health, models, defaultModel, capabilities, supportsStreaming, supportsToolCalling }));
+    const persistenceReady = !persistence.configured || persistence.healthy;
+    response.status(persistenceReady ? 200 : 503).json({
+      ok: persistenceReady,
+      service: "code-collaborator",
+      backend: { healthy: true },
+      persistence,
+      ai: { healthy: providers.some((provider) => provider.available), providers },
+      agent: { available: true, limits: { maxIterations: env.agentMaxIterations, maxToolCalls: env.agentMaxToolCalls, timeoutMs: env.agentTimeoutMs } },
+      features: featureAvailability()
+    });
   });
   app.use("/api", apiLimiter);
   app.use("/api", mediaRoutes);

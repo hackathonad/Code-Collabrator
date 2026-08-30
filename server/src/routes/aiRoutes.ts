@@ -18,10 +18,13 @@ import { gitService } from "../modules/git/gitService";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
+import { env } from "../config/env";
+import { logSafeEvent } from "../utils/safeLogger";
 
 const router = Router();
 const REQUEST_WINDOW_MS = 60_000;
-const REQUEST_LIMIT = 20;
+const REQUEST_LIMIT = env.aiRequestRateLimit;
+const MAX_AI_REQUEST_BYTES = 200_000;
 const requestWindows = new Map<string, { startedAt: number; count: number }>();
 const actions = new Set<AIAction>(["explain", "generate", "fix", "optimize", "refactor", "test", "document", "summarize", "review", "error", "custom"]);
 const clip = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : "";
@@ -87,6 +90,7 @@ const parseInput = (body: unknown): AIRequestInput | null => {
 
 const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIRequest> => {
   const roomId = sanitizeRoomId(request.params.roomId);
+  if (JSON.stringify(request.body ?? {}).length > MAX_AI_REQUEST_BYTES) throw new AIRequestRouteError(413, "This AI request is too large", "INVALID_REQUEST");
   const input = parseInput(request.body);
   if (!roomId || !input) throw new AIRequestRouteError(400, "A valid AI request is required");
   const userId = verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
@@ -118,13 +122,14 @@ const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIReques
 
 const respondToAIError = (response: Response, error: unknown) => {
   if (error instanceof AIRequestRouteError) { sendError(response, error.status, error.message, error.code); return; }
-  if (error instanceof AIProviderUnavailableError) { sendError(response, 503, error.message, error.code); return; }
+  if (error instanceof AIProviderUnavailableError) { logSafeEvent("ai", "provider_failure", { provider: error.provider, code: error.code }); sendError(response, 503, error.message, error.code); return; }
   if (error instanceof AIProviderRequestError) {
+    logSafeEvent("ai", "provider_failure", { code: error.code });
     const status = error.code === "RATE_LIMITED" ? 429 : error.code === "INVALID_REQUEST" || error.code === "MODEL_NOT_FOUND" ? 400 : error.code === "CONTEXT_TOO_LARGE" ? 413 : error.code === "TIMEOUT" ? 504 : 502;
     sendError(response, status, error.message, error.code);
     return;
   }
-  if (error instanceof AICancelledError) { sendError(response, 499, error.message, "CANCELLED"); return; }
+  if (error instanceof AICancelledError) { logSafeEvent("ai", "cancelled"); sendError(response, 499, error.message, "CANCELLED"); return; }
   sendError(response, 500, "Unable to complete the AI request", "UNKNOWN");
 };
 

@@ -3,7 +3,7 @@ import { roomStore } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
-import { getPublicAgentProposalHistory, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
+import { getPublicAgentProposalHistory, getPublicAgentProposalState, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
 import {
   isEditableRole,
@@ -79,6 +79,7 @@ const RATE_LIMIT_WINDOW_MS = 1_000;
 const RATE_LIMIT_MAX_EVENTS = 80;
 const EDITOR_PERSIST_DEBOUNCE_MS = 1_500;
 const agentSocketSubscriptions = new Set<() => boolean>();
+const registeredServers = new WeakSet<object>();
 
 /** Clears server-owned timers during a controlled process shutdown. */
 export const clearCollaborationRuntime = async () => {
@@ -256,6 +257,8 @@ const resolveSocketUserId = async (socket: Socket, roomId: string) => {
 };
 
 export const registerCollaborationSocket = (io: Server) => {
+  if (registeredServers.has(io)) return;
+  registeredServers.add(io);
   const reject = (socket: Socket, message = "Invalid room event payload") => {
     socket.emit("room:error", message);
   };
@@ -516,6 +519,7 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.emit("room:snapshot", snapshot);
         socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId));
         socket.emit("agent:proposal_history", getPublicAgentProposalHistory(payload.roomId));
+        socket.emit("agent:proposal_state", getPublicAgentProposalState(payload.roomId));
         io.to(payload.roomId).emit("room:participants", snapshot.participants);
         void roomPersistence.saveRoom(snapshot);
       } catch (error) {

@@ -1,4 +1,5 @@
 import { aiService as defaultAIService } from "../ai/aiService";
+import { env } from "../../config/env";
 import {
   AICancelledError,
   AIProviderRequestError,
@@ -12,6 +13,7 @@ import { gitService } from "../git/gitService";
 import type { RoomSnapshot } from "../rooms/roomTypes";
 import { createAgentSystemPrompt, createAgentUserMessage } from "./agentPrompt";
 import { createAgentToolRegistry } from "./agentToolRegistry";
+import { logSafeEvent } from "../../utils/safeLogger";
 import { actionForRequest, buildProjectIndex, classifyTask, createTaskPlan, isComplexTask, recommendProvider, reviewPatch, selectRelevantFiles } from "./agentIntelligence";
 import type {
   AgentDiagnosisHypothesis,
@@ -24,9 +26,9 @@ import type {
   AgentToolName
 } from "./agentTypes";
 
-export const AGENT_MAX_ITERATIONS = 8;
-export const AGENT_MAX_TOOL_CALLS = 20;
-export const AGENT_TIMEOUT_MS = 90_000;
+export const AGENT_MAX_ITERATIONS = env.agentMaxIterations;
+export const AGENT_MAX_TOOL_CALLS = env.agentMaxToolCalls;
+export const AGENT_TIMEOUT_MS = env.agentTimeoutMs;
 const MAX_FINAL_TEXT = 12_000;
 const MAX_INTERNAL_RESULT = 24_000;
 
@@ -161,12 +163,21 @@ export const executeAgent = async (
   const service = dependencies.aiService ?? defaultAIService;
   const events: AgentEvent[] = [];
   const patches: AgentResult["patches"] = [];
-  const emit = (event: AgentEvent) => { events.push(event); onEvent?.(event); };
+  const emit = (event: AgentEvent) => {
+    events.push(event);
+    if (event.type === "tool_call") logSafeEvent("agent", "tool_invocation", { taskId: request.taskId, roomId: request.roomId, tool: event.tool });
+    if (event.type === "validation" || event.type === "execution") logSafeEvent("agent", "validation_result", { taskId: request.taskId, roomId: request.roomId, category: event.category, status: event.status, ok: event.ok });
+    if (event.type === "error") logSafeEvent("agent", event.code.toLowerCase(), { taskId: request.taskId, roomId: request.roomId });
+    onEvent?.(event);
+  };
   const controller = new AbortController();
   const abortFromCaller = () => controller.abort();
   signal?.addEventListener("abort", abortFromCaller, { once: true });
   let timedOut = false;
   const deadline = Date.now() + AGENT_TIMEOUT_MS;
+  let iterations = 0;
+  let usage: AgentResult["usage"];
+  let toolCalls = 0;
   const runWithinDeadline = async <T>(operation: () => Promise<T>) => {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -196,6 +207,7 @@ export const executeAgent = async (
     }
     emitStatus(`Preparing ${request.mode.toLowerCase()} mode for ${context.currentFile?.name ?? "the workspace"}`);
     const recommendation = recommendProvider(service.getProviders(), actionForRequest(request));
+    logSafeEvent("agent", "provider_selected", { taskId: request.taskId, roomId: request.roomId, provider: request.settings.provider, recommendedProvider: recommendation?.providerId, recommendationSelected: recommendation?.providerId === request.settings.provider && recommendation?.model === request.settings.model });
     const projectIndex = buildProjectIndex(room);
     const relevant = selectRelevantFiles(room, request, projectIndex);
     emit({ type: "context", files: relevant.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match" })), projectSummary: projectIndex.summary, classification: classifyTask(request), ...(recommendation ? { recommendation: { ...recommendation, selected: recommendation.providerId === request.settings.provider && recommendation.model === request.settings.model } } : {}) });
@@ -216,15 +228,15 @@ export const executeAgent = async (
       emit({ type: "plan", steps: createTaskPlan(request, relevant) });
       messages.push({ role: "user", content: "A concise safe plan was recorded before execution. Continue with verified tool calls or a final answer." });
     }
-    let usage: AgentResult["usage"];
     let review: AgentReviewFinding[] | undefined;
-    let toolCalls = 0;
     for (let iteration = 1; iteration <= AGENT_MAX_ITERATIONS; iteration += 1) {
+      iterations = iteration;
       if (controller.signal.aborted) throw new AgentRuntimeError(timedOut ? "TIMEOUT" : "CANCELLED", timedOut ? "Agent generation timed out" : "Agent generation was cancelled");
       if (toolCalls >= AGENT_MAX_TOOL_CALLS) {
         emit({ type: "error", code: "TOOL_LIMIT", message: "The agent stopped after reaching the safe tool-call limit." });
         return baseResult(request, events, patches, iteration - 1, toolCalls, "tool-limit", usage);
       }
+      logSafeEvent("agent", "iteration_started", { taskId: request.taskId, roomId: request.roomId, iteration });
       emitStatus(`Working on step ${iteration} of ${AGENT_MAX_ITERATIONS}`);
       const completion = await runWithinDeadline(() => collectCompletion(service, { ...request, conversation: messages }, controller.signal));
       if (controller.signal.aborted) throw new AgentRuntimeError(timedOut ? "TIMEOUT" : "CANCELLED", timedOut ? "Agent generation timed out" : "Agent generation was cancelled");
@@ -273,6 +285,7 @@ export const executeAgent = async (
         emit({ type: "validation", ...result.validation });
         emit({ type: "execution", ...result.validation });
       }
+      if (!result.ok) logSafeEvent("agent", "tool_failure", { taskId: request.taskId, roomId: request.roomId, tool: action.tool, summary: result.summary });
       emit({ type: "tool_result", tool: action.tool!, ok: result.ok, summary: result.summary });
       messages.push({ role: "user", content: `<tool-result source='untrusted'>\n${resultForModel(result)}\n</tool-result>\nContinue with one allowed JSON object.` });
     }
@@ -283,11 +296,11 @@ export const executeAgent = async (
     if (error instanceof AgentRuntimeError && (error.code === "CANCELLED" || error.code === "TIMEOUT")) {
       const cancelled = error.code === "CANCELLED";
       emit({ type: "error", code: error.code, message: error.message });
-      return { ...baseResult(request, events, patches, events.filter((event) => event.type === "status").length, 0, cancelled ? "cancelled" : "timeout"), finalText: cancelled ? "Agent generation was cancelled." : "Agent generation timed out." };
+        return { ...baseResult(request, events, patches, iterations, toolCalls, cancelled ? "cancelled" : "timeout", usage), finalText: cancelled ? "Agent generation was cancelled." : "Agent generation timed out." };
     }
     if (error instanceof AICancelledError) {
       emit({ type: "error", code: "CANCELLED", message: error.message });
-      return { ...baseResult(request, events, patches, 0, 0, "cancelled"), finalText: error.message };
+      return { ...baseResult(request, events, patches, iterations, toolCalls, "cancelled", usage), finalText: error.message };
     }
     throw error;
   } finally {

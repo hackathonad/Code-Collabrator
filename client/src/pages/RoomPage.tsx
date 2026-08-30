@@ -148,18 +148,27 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       pushToast("This proposal is stale. Generate a new patch.");
       return;
     }
-    const patchFiles = patch.files ?? [{ fileId: patch.fileId, expectedContent: patch.expectedContent }];
+    let effectivePatch = patch;
+    if (!patch.expectedContent || patch.files?.some((file) => !file.expectedContent)) {
+      try {
+        effectivePatch = (await api.getAgentProposal(room.roomId, session.guestToken, patch.patchId)).patch;
+      } catch (issue) {
+        pushToast(issue instanceof Error ? issue.message : "The proposal details could not be loaded");
+        return;
+      }
+    }
+    const patchFiles = effectivePatch.files ?? [{ fileId: effectivePatch.fileId, expectedContent: effectivePatch.expectedContent }];
     if (patchFiles.some((file) => room.workspace.files[file.fileId]?.content !== file.expectedContent)) {
       useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
       pushToast("The file changed after this proposal. Generate a new patch.");
       return;
     }
     try {
-      const result = await api.applyAgentPatch(room.roomId, session.guestToken, patch);
+      const result = await api.applyAgentPatch(room.roomId, session.guestToken, effectivePatch);
       storage.saveRoomSnapshot(result.room);
       setRoom(result.room);
       useAIStore.getState().markAgentPatchStatus(patch.patchId, "applied");
-      pushToast(`Applied agent patch to ${patch.files?.length ?? 1} file(s)`);
+      pushToast(`Applied agent patch to ${effectivePatch.files?.length ?? 1} file(s)`);
     } catch (issue) {
       if (issue instanceof ApiRequestError && issue.code === "PATCH_STALE") useAIStore.getState().markAgentPatchStatus(patch.patchId, "stale");
       pushToast(issue instanceof Error ? issue.message : "The patch could not be applied");
@@ -169,7 +178,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const validateAgentPatch = async (patch: AgentPatch, category: ValidationCategory) => {
     if (!session) return;
     try {
-      const result = await api.validateAgent(roomId, session.guestToken, category);
+      const result = await api.validateAgent(roomId, session.guestToken, category, patch.taskId);
       useAIStore.getState().recordAgentValidation(patch.patchId, result.validation);
       pushToast(`${category} ${result.validation.status}: ${result.validation.summary}`);
     } catch (issue) {

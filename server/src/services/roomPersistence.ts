@@ -51,7 +51,8 @@ const durableParticipants = (participants: RoomSnapshot["participants"]) => part
 const safeErrorText = (value: unknown) => {
   if (typeof value !== "string") return "";
   return value
-    .replace(/(SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY|access[_ -]?token|cookie)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/(SUPABASE_SERVICE_ROLE_KEY|SUPABASE_ANON_KEY|api[_-]?key|api[_-]?secret|service[_-]?role|secret|password|token|authorization|cookie)\s*[:=]\s*[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/-----BEGIN [A-Z ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z ]+PRIVATE KEY-----/gi, "[PRIVATE KEY REDACTED]")
     .slice(0, 500);
 };
 

@@ -18,7 +18,8 @@ import type {
 import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, MAX_WORKSPACE_CONTENT_LENGTH, updateWorkspaceFileContent } from "./workspaceService";
 import { clearAgentProposals, markAgentProposalsStale } from "../agent/agentEvents";
 import { invalidateProjectIndexCache } from "../agent/agentIntelligence";
-import { clearAgentTasks } from "../agent/agentTaskHistory";
+import { cancelAgentTasksForRoom, clearAgentTasks } from "../agent/agentTaskHistory";
+import { clearAgentMemory } from "../agent/agentMemory";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
@@ -367,7 +368,19 @@ export const roomStore = {
     }
     const currentLength = Object.values(room.workspace.files).reduce((total, file) => total + file.content.length, 0);
     if (currentLength + totalDelta > MAX_WORKSPACE_CONTENT_LENGTH) throw new Error("Workspace content limit reached");
-    for (const change of changes) updateWorkspaceFileContent(room.workspace, change.fileId, change.content, userId);
+    // All validation and the final aggregate size check happen before any
+    // mutation. Applying the already-validated values directly prevents a
+    // positive change in one file from failing halfway through a multi-file
+    // patch while a later file would have reduced the total size.
+    const updatedAt = Date.now();
+    for (const change of changes) {
+      const file = room.workspace.files[change.fileId];
+      file.content = change.content;
+      file.updatedAt = updatedAt;
+      file.updatedByUserId = userId;
+    }
+    room.workspace.updatedAt = updatedAt;
+    room.workspace.ai.contextVersion += changes.length;
     room.workspace.activeFileId = changes[0].fileId;
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
     syncLegacyEditorProjection(room);
@@ -580,10 +593,12 @@ export const roomStore = {
     }
 
     room.deletedAt = Date.now();
+    cancelAgentTasksForRoom(roomId);
     rooms.delete(roomId);
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
     clearAgentProposals(roomId);
     clearAgentTasks(roomId);
+    clearAgentMemory(roomId);
   },
 
   getRoomSnapshot(roomId: string) {

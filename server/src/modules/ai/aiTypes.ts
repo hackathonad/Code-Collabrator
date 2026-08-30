@@ -1,5 +1,6 @@
 
 import type { SupportedLanguage } from "../../constants/languages";
+import type { AgentMemorySnapshot } from "../agent/agentTypes";
 
 export type AIProviderId = "gemini" | "groq" | "openrouter" | "ollama" | "openai" | "anthropic" | "custom";
 export type AIAction = "explain" | "generate" | "fix" | "optimize" | "refactor" | "test" | "document" | "summarize" | "review" | "error" | "custom";
@@ -54,6 +55,7 @@ export interface AIContextPayload {
   selectedCode?: string;
   openFiles: Array<{ id: string; name: string; language: SupportedLanguage; content: string }>;
   workspaceSummary: string; projectMetadata: string; projectIndexSummary: string; relevantFiles: Array<{ path: string; reason: string; score: number }>; roomMetadata: string; recentChat: AIChatMessage[]; recentHistory: string[]; diagnostics: AIEditorDiagnostic[];
+  agentMemory: AgentMemorySnapshot;
   execution?: AIExecutionContext; characterCount: number; estimatedTokens: number; includedSections: string[]; excludedSections: string[]; truncated: boolean;
 }
 export interface AICompletionRequest { messages: AIChatMessage[]; settings: AISettings; metadata: { workspaceId: string; action: AIAction; language: SupportedLanguage }; signal?: AbortSignal; }

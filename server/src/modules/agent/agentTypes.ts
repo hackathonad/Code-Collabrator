@@ -14,9 +14,10 @@ import type {
 export type AgentMode = "ASK" | "EDIT" | "DEBUG" | "EXPLAIN";
 export type AgentTaskKind = "question" | "explain" | "debug" | "edit" | "refactor" | "review" | "test" | "architecture" | "documentation" | "performance" | "security";
 export type AgentDiagnosisConfidence = "confirmed" | "likely" | "possible";
+export type AgentMemoryCategory = "currentTask" | "recentDecisions" | "patchDecisions" | "projectFacts" | "validationResults";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
-export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable";
+export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable" | "cancelled";
 export type AgentToolName =
   | "READ_FILE"
   | "LIST_FILES"
@@ -64,8 +65,10 @@ export interface AgentRequest {
   diagnostics?: AgentDiagnostic[];
   intent?: AIAction;
   taskId?: string;
+  continuationTaskId?: string;
   conversationId?: string;
   continuitySummary?: string;
+  initiatorLabel?: string;
   mode: AgentMode;
   language: SupportedLanguage;
   settings: AISettings;
@@ -128,6 +131,22 @@ export interface AgentTaskClassification {
   reason: string;
 }
 
+export interface AgentMemoryEntry {
+  id: string;
+  category: AgentMemoryCategory;
+  summary: string;
+  taskId?: string;
+  createdAt: number;
+}
+
+export interface AgentMemorySnapshot {
+  currentTask: AgentMemoryEntry | null;
+  recentDecisions: AgentMemoryEntry[];
+  patchDecisions: AgentMemoryEntry[];
+  projectFacts: AgentMemoryEntry[];
+  validationResults: AgentMemoryEntry[];
+}
+
 export interface AgentValidationSummary {
   category: ValidationCategory;
   status: AgentValidationStatus;
@@ -143,6 +162,7 @@ export interface AgentTaskPublic {
   mode: AgentMode;
   intent: AIAction;
   classification?: AgentTaskClassification;
+  initiatorLabel?: string;
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
@@ -151,6 +171,23 @@ export interface AgentTaskPublic {
   patchCount: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface AgentProposalPublic {
+  patchId: string;
+  taskId?: string;
+  roomId: string;
+  workspaceId: string;
+  fileId: string;
+  path: string;
+  baseVersion: number;
+  additions: number;
+  deletions: number;
+  preview: string;
+  applied: boolean;
+  status: AgentProposalStatus;
+  files: Array<{ fileId: string; path: string; additions: number; deletions: number }>;
+  review?: AgentReviewFinding[];
 }
 
 export interface AgentProposalEvent {

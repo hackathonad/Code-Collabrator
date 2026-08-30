@@ -13,6 +13,10 @@ const toNumber = (value: string | undefined, fallback: number) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65_535 ? parsed : fallback;
 };
+const toBoundedNumber = (value: string | undefined, fallback: number, maximum: number) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
+};
 
 const toHttpUrl = (value: string | undefined, fallback = "") => {
   if (!value) return fallback;
@@ -64,6 +68,14 @@ export interface ServerEnvironment {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   guestSessionSecret: string;
+  apiRateLimit: number;
+  aiRequestRateLimit: number;
+  agentRequestRateLimit: number;
+  agentPatchRateLimit: number;
+  agentValidationRateLimit: number;
+  agentMaxIterations: number;
+  agentMaxToolCalls: number;
+  agentTimeoutMs: number;
 }
 
 export interface ParsedEnvironment {
@@ -102,6 +114,14 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     supabaseUrl: toHttpUrl(source.SUPABASE_URL),
     supabaseServiceRoleKey: source.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "",
     guestSessionSecret: source.GUEST_SESSION_SECRET?.trim() || (isProduction ? "" : DEVELOPMENT_GUEST_SECRET),
+    apiRateLimit: toBoundedNumber(source.API_RATE_LIMIT, 180, 2_000),
+    aiRequestRateLimit: toBoundedNumber(source.AI_REQUEST_RATE_LIMIT, 20, 200),
+    agentRequestRateLimit: toBoundedNumber(source.AGENT_REQUEST_RATE_LIMIT, 12, 100),
+    agentPatchRateLimit: toBoundedNumber(source.AGENT_PATCH_RATE_LIMIT, 20, 100),
+    agentValidationRateLimit: toBoundedNumber(source.AGENT_VALIDATION_RATE_LIMIT, 8, 100),
+    agentMaxIterations: toBoundedNumber(source.AGENT_MAX_ITERATIONS, 8, 8),
+    agentMaxToolCalls: toBoundedNumber(source.AGENT_MAX_TOOL_CALLS, 20, 20),
+    agentTimeoutMs: toBoundedNumber(source.AGENT_TIMEOUT_MS, 90_000, 90_000),
   };
 
   const issues: string[] = [];

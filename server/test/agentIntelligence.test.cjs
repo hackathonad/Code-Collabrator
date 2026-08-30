@@ -7,6 +7,7 @@ const { createAgentToolRegistry } = require("../dist/modules/agent/agentToolRegi
 const { parseAgentAction } = require("../dist/modules/agent/agentRuntime");
 const { workspacePathForFile } = require("../dist/modules/agent/agentSecurity");
 const { canTransitionAgentTask, getAgentTask, getPublicAgentTaskHistory, startAgentTask, taskStatusForResult, updateAgentTask, subscribeAgentTasks } = require("../dist/modules/agent/agentTaskHistory");
+const { clearAgentMemory, getAgentMemory, recordAgentMemory } = require("../dist/modules/agent/agentMemory");
 
 const settings = { provider: "custom", model: "test-model", temperature: 0, maxTokens: 256, streaming: false, workspaceContextSize: "minimal" };
 const fixture = () => {
@@ -160,7 +161,7 @@ test("task lifecycle is deterministic, recoverable, and rejects duplicate task I
   const taskId = `task-${value.room.roomId}`;
   const events = [];
   const unsubscribe = subscribeAgentTasks((event) => { if (event.task.taskId === taskId) events.push(event); });
-  const task = startAgentTask({ ...value.request, taskId, conversationId: "conversation-1" });
+  const task = startAgentTask({ ...value.request, taskId, conversationId: "conversation-1", initiatorLabel: "Aryan" });
   assert.equal(task.status, "queued");
   assert.equal(startAgentTask({ ...value.request, taskId }), null);
   assert.equal(startAgentTask({ ...fixture().request, taskId }), null, "task IDs remain unambiguous across rooms");
@@ -173,8 +174,26 @@ test("task lifecycle is deterministic, recoverable, and rejects duplicate task I
   assert.equal(taskStatusForResult("cancelled"), "cancelled");
   const publicTask = getPublicAgentTaskHistory(value.room.roomId, value.request.userId)[0];
   assert.equal(publicTask.conversationId, "conversation-1");
+  assert.equal(publicTask.initiatorLabel, "Aryan");
   assert.equal(publicTask.status, "completed");
   assert.ok(events.some((event) => event.task.status === "waiting_for_approval"));
   assert.equal(getAgentTask(taskId, value.room.roomId, value.request.userId).status, "completed");
   unsubscribe();
+});
+
+test("agent memory is bounded, room-scoped, redacted, and cleared independently", () => {
+  const first = fixture();
+  const second = fixture();
+  for (let index = 0; index < 14; index += 1) recordAgentMemory(first.room.roomId, "recentDecisions", `token=secret-${index}`);
+  recordAgentMemory(first.room.roomId, "currentTask", "Review the workspace");
+  recordAgentMemory(first.room.roomId, "patchDecisions", "Accepted patch for main.js");
+  const memory = getAgentMemory(first.room.roomId);
+  assert.equal(memory.recentDecisions.length, 10);
+  assert.ok(memory.recentDecisions.every((entry) => !entry.summary.includes("secret-")));
+  assert.equal(memory.currentTask.summary, "Review the workspace");
+  assert.equal(getAgentMemory(second.room.roomId).currentTask, null);
+  memory.recentDecisions.pop();
+  assert.equal(getAgentMemory(first.room.roomId).recentDecisions.length, 10);
+  clearAgentMemory(first.room.roomId);
+  assert.deepEqual(getAgentMemory(first.room.roomId), { currentTask: null, recentDecisions: [], patchDecisions: [], projectFacts: [], validationResults: [] });
 });

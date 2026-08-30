@@ -3,6 +3,7 @@ import type { RepositorySummary } from "../git/gitTypes";
 import type { AIChatMessage, AIContextPayload, AIRequestInput } from "./aiTypes";
 import { isSafeWorkspaceFile } from "../agent/agentSecurity";
 import { buildProjectIndex, selectRelevantFiles } from "../agent/agentIntelligence";
+import { getAgentMemory, recordAgentMemory } from "../agent/agentMemory";
 
 const SUMMARY_CACHE_TTL_MS = 15_000;
 const MAX_SUMMARY_CACHE_ENTRIES = 100;
@@ -62,6 +63,8 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   // user-controlled text section is then charged against the remaining budget.
   const workspace = room.workspace; const budget = AI_CONTEXT_BUDGETS[input.settings.workspaceContextSize]; let remaining = Math.max(0, budget - 1_200); let truncated = false;
   const projectIndex = buildProjectIndex(room);
+  const knownMemory = getAgentMemory(room.roomId);
+  if (!knownMemory.projectFacts.some((entry) => entry.summary === projectIndex.packageSummary)) recordAgentMemory(room.roomId, "projectFacts", projectIndex.packageSummary);
   const rankedFiles = selectRelevantFiles(room, { ...input, userInstruction: input.prompt, intent: input.action, currentFileId: input.currentFileId, relevantFiles: input.relevantFiles, diagnostics: input.diagnostics }, projectIndex);
   const includedSections: string[] = []; const excludedSections: string[] = [];
   const include = (section: string, value: string, preferredLimit: number) => {
@@ -90,12 +93,15 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
   const workspaceSummary = include("workspace structure", compactWorkspaceSummary(workspace), 3_500);
   const projectMetadata = include("project metadata", [`Open tabs: ${workspace.openFileIds.length}`, `Active file: ${currentFile?.name ?? "none"}`, repository?.repository ? `Repository: ${repository.repository.name} (${repository.repository.provider}), branch ${repository.repository.currentBranch ?? "unknown"}` : "Repository: local workspace", repository?.status.state === "changes" ? `Git changes: ${repository.status.entries.length}` : "Git status: no scanned changes"].join("\n"), 1_000);
   const roomMetadata = include("room metadata", [`Editor version: ${room.version}`, `Participants: ${room.participants.length}`, `Online participants: ${room.participants.filter((participant) => participant.isOnline).length}`, `Active file path: ${currentRaw && currentFile ? filePath(workspace, currentRaw) : "none"}`].join("\n"), 800);
+  const agentMemory = getAgentMemory(room.roomId);
+  const memoryText = include("agent memory", JSON.stringify(agentMemory), 2_400);
+  const boundedMemory = memoryText && memoryText.length === JSON.stringify(agentMemory).length ? agentMemory : { currentTask: agentMemory.currentTask, recentDecisions: agentMemory.recentDecisions.slice(-2), patchDecisions: agentMemory.patchDecisions.slice(-2), projectFacts: agentMemory.projectFacts.slice(-2), validationResults: agentMemory.validationResults.slice(-2) };
   const historyText = include("recent workspace history", room.history.slice(0, 5).map((entry) => `${entry.reason}: ${entry.createdByUsername} edited ${entry.fileId ?? "active file"}`).join("\n"), 700);
   const chatText = include("recent room chat", room.chat.slice(-4).map((message) => trimWithMarker(`${message.username}: ${message.message}`, 500).value).join("\n"), 1_200);
   const recentHistory = historyText ? historyText.split("\n") : [];
   const recentChat: AIChatMessage[] = chatText ? chatText.split("\n").map((content) => ({ role: "user", content })) : [];
   const relevantFiles = relevantFileText ? rankedFiles.slice(0, 12).map((entry) => ({ path: entry.file.path, reason: entry.reasons.join(", ") || "project index match", score: entry.score })) : [];
-  const context: AIContextPayload = { roomId: room.roomId, workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, editorVersion: room.version, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, projectIndexSummary: projectIndexSummary || "Project index was unavailable.", relevantFiles, roomMetadata, recentChat, recentHistory, diagnostics: includedDiagnostics, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
+  const context: AIContextPayload = { roomId: room.roomId, workspaceId: workspace.id, workspaceName: workspace.name, language: currentFile?.language ?? room.language, editorVersion: room.version, currentFile, selectedCode, openFiles, workspaceSummary, projectMetadata, projectIndexSummary: projectIndexSummary || "Project index was unavailable.", relevantFiles, roomMetadata, recentChat, recentHistory, diagnostics: includedDiagnostics, agentMemory: boundedMemory, execution: execution?.output ? execution : undefined, characterCount: 0, estimatedTokens: 0, includedSections, excludedSections, truncated };
   context.characterCount = JSON.stringify(context).length;
   // The 1,200-character envelope reserve above is intentionally conservative,
   // but keep the accounting value truthful if future metadata grows.

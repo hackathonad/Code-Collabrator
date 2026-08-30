@@ -3,6 +3,7 @@ const http = require("node:http");
 const test = require("node:test");
 const { createApp } = require("../dist/app");
 const { parseServerEnvironment } = require("../dist/config/env");
+const { logSafeEvent } = require("../dist/utils/safeLogger");
 
 test("production configuration keeps a safe frontend default and rejects weak guest secrets", () => {
   const parsed = parseServerEnvironment({ NODE_ENV: "production" });
@@ -20,6 +21,33 @@ test("production configuration keeps a safe frontend default and rejects weak gu
   });
   assert.deepEqual(valid.issues, []);
   assert.deepEqual(valid.config.clientOrigins, ["https://app.example.test"]);
+});
+
+test("production safety limits are configurable but never exceed hard bounds", () => {
+  const configured = parseServerEnvironment({ NODE_ENV: "test", API_RATE_LIMIT: "99", AI_REQUEST_RATE_LIMIT: "17", AGENT_REQUEST_RATE_LIMIT: "9", AGENT_PATCH_RATE_LIMIT: "7", AGENT_VALIDATION_RATE_LIMIT: "5", AGENT_MAX_ITERATIONS: "8", AGENT_MAX_TOOL_CALLS: "20", AGENT_TIMEOUT_MS: "90000" });
+  assert.deepEqual({ api: configured.config.apiRateLimit, ai: configured.config.aiRequestRateLimit, agent: configured.config.agentRequestRateLimit, patch: configured.config.agentPatchRateLimit, validation: configured.config.agentValidationRateLimit, iterations: configured.config.agentMaxIterations, tools: configured.config.agentMaxToolCalls, timeout: configured.config.agentTimeoutMs }, { api: 99, ai: 17, agent: 9, patch: 7, validation: 5, iterations: 8, tools: 20, timeout: 90_000 });
+  const invalid = parseServerEnvironment({ NODE_ENV: "test", API_RATE_LIMIT: "0", AGENT_MAX_ITERATIONS: "9", AGENT_MAX_TOOL_CALLS: "21", AGENT_TIMEOUT_MS: "90001" });
+  assert.equal(invalid.config.apiRateLimit, 180);
+  assert.equal(invalid.config.agentMaxIterations, 8);
+  assert.equal(invalid.config.agentMaxToolCalls, 20);
+  assert.equal(invalid.config.agentTimeoutMs, 90_000);
+});
+
+test("structured safe logging redacts sensitive field names and values", () => {
+  const original = console.info;
+  const lines = [];
+  console.info = (line) => lines.push(line);
+  try {
+    logSafeEvent("agent", "test", { apiKey: "server-secret-value", authorization: "Bearer private-token", note: "token=embedded-secret" });
+  } finally {
+    console.info = original;
+  }
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].includes("server-secret-value"), false);
+  assert.equal(lines[0].includes("Bearer private-token"), false);
+  assert.equal(lines[0].includes("embedded-secret"), false);
+  assert.match(lines[0], /\"apiKey\":\"\[REDACTED\]\"/);
+  assert.match(lines[0], /\"authorization\":\"\[REDACTED\]\"/);
 });
 
 test("health, readiness, safe headers, and unknown API handling are available without optional services", async () => {
