@@ -24,6 +24,7 @@ Vercel serves the frontend build and rewrites SPA routes to `index.html`. It is 
 - Optional persistence: Supabase database
 - Optional AI: Ollama, Gemini, Groq, OpenRouter, OpenAI, Anthropic
 - Optional media: LiveKit
+- Optional GitHub project workflow: server-side GitHub API adapter with bounded virtual-workspace import
 
 ## Project structure
 
@@ -106,6 +107,7 @@ npm run test:media --workspace server
 - Safe coding-agent modes (Ask, Edit, Debug, Explain) with virtual-workspace tools, streamed activity, and approval-gated patches
 - Honest run workflow: copy/download source and open a language-matched external runner
 - Optional LiveKit voice, video, screen sharing, and device controls
+- GitHub Source control workflow: connect a server-configured GitHub integration, import a repository branch, browse/edit it collaboratively, inspect status and diff, stage, prepare a commit, push without force, pull safely, create branches, and open pull requests
 
 ## Supabase and optional services
 
@@ -142,6 +144,12 @@ ollama pull qwen3.5:latest
 The server discovers installed/cloud models and exposes only non-secret provider/model status through `GET /api/ai/providers`. Leave `OLLAMA_MODEL` blank to use the first discovered model, or set it to a discovered model name. The AI panel's Refresh control re-reads the cached model catalog. Ollama is not contacted directly by the browser and a local Ollama URL must not be used as a production Vercel variable. Configure cloud provider variables in the backend environment only when those providers are actually needed. The panel shows every provider as not configured, unavailable, or available; only available providers with a discovered model can send requests.
 
 LiveKit is optional. Calls use short-lived backend-issued room tokens that are bound to the current participant. Camera, microphone, and screen capture require direct browser user actions. Production media requires HTTPS and a secure `wss:` LiveKit endpoint.
+
+## GitHub project workflow
+
+The Source control activity uses the existing workspace/editor rather than creating a second local checkout. With `GITHUB_TOKEN` configured on the backend, a guest explicitly connects GitHub for the current room session, selects an authorized repository and branch, and imports up to 500 bounded text files into the shared virtual workspace. The server derives working-tree status and diffs from the imported baseline, protects branch switching and pull from unsaved collaborator changes, and keeps staged state room/workspace scoped.
+
+Commit preparation, push, branch creation/switching, pull, and pull-request creation require explicit user actions. Push uses GitHub's Git Data API with `force: false` and rejects a remote-ahead branch; there is no shell Git, arbitrary remote URL, force push, branch deletion, or history rewrite. The coding agent can read the bounded project context and actual diff, review it, and suggest commit/PR text, but it cannot silently write to GitHub. The integration is intentionally server-token based rather than OAuth because the product remains guest-first; the token is never exposed to the browser or persisted in room state. See [environment reference](docs/ENVIRONMENT.md) for limits and the restart/persistence boundary.
 
 ## Coding-agent workflow
 

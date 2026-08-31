@@ -1,5 +1,5 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
-import type { RepositorySummary } from "../types/git";
+import type { GitBranchSummary, GitDiffFile, GitHubConnectionStatus, GitHubRepositorySummary, ProjectSummary, RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
 import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
@@ -196,6 +196,92 @@ export const api = {
     });
     const payload = await readJson<{ ok: true; repository: RepositorySummary }>(response);
     return payload.repository;
+  },
+
+  async getGitHubStatus(roomId: string, session?: UserSession | null) {
+    const effectiveSession = session ?? storage.getSession(roomId);
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/status${roomSessionQuery(effectiveSession)}`));
+    return (await readJson<{ ok: true; connection: GitHubConnectionStatus }>(response)).connection;
+  },
+
+  async connectGitHub(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/connect`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken }) });
+    return (await readJson<{ ok: true; connection: GitHubConnectionStatus }>(response)).connection;
+  },
+
+  async disconnectGitHub(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/disconnect`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken }) });
+    return await readJson<{ ok: true }>(response);
+  },
+
+  async listGitHubRepositories(roomId: string, session: UserSession, search = "") {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" }); if (search.trim()) query.set("search", search.trim().slice(0, 80));
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/repositories?${query.toString()}`));
+    return (await readJson<{ ok: true; repositories: GitHubRepositorySummary[] }>(response)).repositories;
+  },
+
+  async listGitHubBranches(roomId: string, session: UserSession, owner: string, repository: string) {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/branches?${query.toString()}`));
+    return (await readJson<{ ok: true; branches: GitBranchSummary[] }>(response)).branches;
+  },
+
+  async importGitHubProject(roomId: string, session: UserSession, input: { owner: string; repository: string; branch?: string; projectName?: string }) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/project/import`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ ...input, guestToken: session.guestToken }) });
+    return await readJson<{ ok: true; project: ProjectSummary; repository: RepositorySummary; room: RoomSnapshot }>(response);
+  },
+
+  async getGitDiff(roomId: string, session: UserSession) {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/diff?${query.toString()}`));
+    return await readJson<{ ok: true; files: GitDiffFile[]; repository: RepositorySummary }>(response);
+  },
+
+  async compareGitBranches(roomId: string, session: UserSession, base?: string, head?: string) {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" }); if (base) query.set("base", base); if (head) query.set("head", head);
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/compare?${query.toString()}`));
+    return (await readJson<{ ok: true; comparison: { status: string; aheadBy: number; behindBy: number; files: Array<{ path: string; status: string; additions: number; deletions: number }> } }>(response)).comparison;
+  },
+
+  async stageGitFile(roomId: string, session: UserSession, path: string, staged: boolean) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/stage`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken, path, staged }) });
+    return (await readJson<{ ok: true; repository: RepositorySummary }>(response)).repository;
+  },
+
+  async createGitBranch(roomId: string, session: UserSession, branch: string, fromBranch?: string) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/branch`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken, branch, fromBranch }) });
+    return await readJson<{ ok: true; branch: GitBranchSummary; repository: RepositorySummary }>(response);
+  },
+
+  async switchGitBranch(roomId: string, session: UserSession, branch: string) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/switch`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken, branch }) });
+    return await readJson<{ ok: true; repository: RepositorySummary; room: RoomSnapshot }>(response);
+  },
+
+  async planGitCommit(roomId: string, session: UserSession, message: string) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/commit`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken, message }) });
+    return await readJson<{ ok: true; pending: { id: string; message: string; branch: string; files: Array<{ path: string; status: string }> }; repository: RepositorySummary }>(response);
+  },
+
+  async pushGitCommit(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/push`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken }) });
+    return await readJson<{ ok: true; commit: { sha: string; url: string | null }; repository: RepositorySummary }>(response);
+  },
+
+  async pullGitBranch(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/pull`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken }) });
+    return await readJson<{ ok: true; state: string; repository: RepositorySummary; room?: RoomSnapshot }>(response);
+  },
+
+  async createPullRequest(roomId: string, session: UserSession, input: { title: string; body: string; head?: string; base?: string }) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/pull-requests`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ ...input, guestToken: session.guestToken }) });
+    return await readJson<{ ok: true; pullRequest: { number: number; url: string; state: string; head: string; base: string }; repository: RepositorySummary }>(response);
+  },
+
+  async listPullRequests(roomId: string, session: UserSession) {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/pull-requests?${query.toString()}`));
+    return (await readJson<{ ok: true; pullRequests: Array<{ number: number; url: string; title: string; state: string; head: string; base: string }> }>(response)).pullRequests;
   },
 
   async getAIProviders() {

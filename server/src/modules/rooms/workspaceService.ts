@@ -132,6 +132,83 @@ export const createWorkspace = (ownerId: string, workspaceId: string, language: 
 
 export const activeWorkspaceFile = (workspace: WorkspaceState) => workspace.files[workspace.activeFileId] ?? Object.values(workspace.files)[0];
 
+/**
+ * Creates a new bounded virtual workspace from repository files. Nothing here
+ * touches the host filesystem; the caller is responsible for filtering
+ * repository paths before handing them to this function.
+ */
+export const createWorkspaceFromProjectFiles = (
+  existing: WorkspaceState,
+  files: Array<{ path: string; content: string; language?: SupportedLanguage }>,
+  actorId: string,
+  name: string
+) => {
+  if (!files.length) throw new Error("The selected repository branch has no importable source files");
+  if (files.length > 500) throw new Error("A project import is limited to 500 files");
+  const uniquePaths = new Set<string>();
+  let totalLength = 0;
+  for (const entry of files) {
+    if (typeof entry.path !== "string" || !entry.path || entry.path.length > 300 || entry.path.startsWith("/") || entry.path.includes("\\")) throw new Error("Repository contains an unsafe file path");
+    const segments = entry.path.split("/");
+    if (segments.some((segment) => !segment || segment === "." || segment === "..")) throw new Error("Repository contains an unsafe file path");
+    if (uniquePaths.has(entry.path)) throw new Error("Repository contains duplicate file paths");
+    uniquePaths.add(entry.path);
+    if (typeof entry.content !== "string") throw new Error("Repository file content is invalid");
+    totalLength += entry.content.length;
+  }
+  if (totalLength > MAX_WORKSPACE_CONTENT_LENGTH) throw new Error("The selected repository is too large for a room workspace");
+  const first = files[0];
+  const firstName = first.path.split("/").pop() ?? "main.js";
+  const fallbackLanguage = first.language ?? languageForFileName(firstName, existing.language);
+  const now = Date.now();
+  const rootFolderId = randomUUID();
+  const folders: Record<string, WorkspaceState["folders"][string]> = {
+    [rootFolderId]: { id: rootFolderId, name: cleanName(name) || existing.name, parentId: null, createdAt: now, updatedAt: now, createdByUserId: actorId }
+  };
+  const workspaceFiles: Record<string, WorkspaceState["files"][string]> = {};
+  const folderIds = new Map<string, string>([["", rootFolderId]]);
+  const getFolder = (parts: string[]) => {
+    let path = "";
+    let parentId: string = rootFolderId;
+    for (const part of parts) {
+      path = path ? `${path}/${part}` : part;
+      const known = folderIds.get(path);
+      if (known) { parentId = known; continue; }
+      const id = randomUUID();
+      folders[id] = { id, name: cleanName(part), parentId, createdAt: now, updatedAt: now, createdByUserId: actorId };
+      folderIds.set(path, id);
+      parentId = id;
+    }
+    return parentId;
+  };
+  const openFileIds: string[] = [];
+  for (const entry of files) {
+    const parts = entry.path.split("/");
+    const fileName = cleanName(parts.pop());
+    const parentId = getFolder(parts);
+    const id = randomUUID();
+    const language = entry.language ?? languageForFileName(fileName, fallbackLanguage);
+    workspaceFiles[id] = { id, name: fileName, parentId, extension: extensionOf(fileName), language, content: entry.content, createdAt: now, updatedAt: now, createdByUserId: actorId, updatedByUserId: actorId };
+    openFileIds.push(id);
+  }
+  const activeFileId = openFileIds[0];
+  return {
+    ...existing,
+    name: cleanName(name) || existing.name,
+    language: workspaceFiles[activeFileId].language,
+    rootFolderId,
+    folders,
+    files: workspaceFiles,
+    openFileIds: openFileIds.slice(0, MAX_OPEN_FILES),
+    activeFileId,
+    recentlyOpenedFileIds: [activeFileId],
+    execution: { entryFileId: activeFileId },
+    ai: { indexedAt: null, contextVersion: existing.ai.contextVersion + 1 },
+    trash: [],
+    updatedAt: now
+  } satisfies WorkspaceState;
+};
+
 export const updateWorkspaceFileContent = (workspace: WorkspaceState, fileId: string | undefined, content: string, actorId: string) => {
   const file = requireFile(workspace, fileId ?? workspace.activeFileId);
   assertWorkspaceContentLimit(workspace, content.length - file.content.length);

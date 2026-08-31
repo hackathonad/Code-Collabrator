@@ -10,6 +10,7 @@ import { createOpenRouterProvider } from "./modules/ai/openrouterProvider";
 import { createOpenAIProvider } from "./modules/ai/openaiProvider";
 import { createAnthropicProvider } from "./modules/ai/anthropicProvider";
 import roomRoutes from "./routes/roomRoutes";
+import projectRoutes from "./routes/projectRoutes";
 import aiRoutes from "./routes/aiRoutes";
 import agentRoutes from "./routes/agentRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
@@ -83,6 +84,7 @@ export const createApp = () => {
   app.use("/api/ai", aiRoutes);
   app.use("/api/ai", agentRoutes);
   app.use("/api/rooms", roomRoutes);
+  app.use("/api/rooms", projectRoutes);
   app.use("/api", (_request, response) => response.status(404).json({ ok: false, message: "API route not found." }));
   app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
     if (response.headersSent) return next(error);

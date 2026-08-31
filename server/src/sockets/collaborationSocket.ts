@@ -5,6 +5,8 @@ import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
 import { getPublicAgentProposalHistory, getPublicAgentProposalState, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
+import { subscribeGitState } from "../modules/git/gitEvents";
+import { projectService } from "../modules/git/projectService";
 import {
   isEditableRole,
   isRecord,
@@ -301,6 +303,10 @@ export const registerCollaborationSocket = (io: Server) => {
     io.to(event.task.roomId).emit("agent:task", event);
   });
   agentSocketSubscriptions.add(unsubscribeAgentTasks);
+  const unsubscribeGitState = subscribeGitState((event) => {
+    io.to(event.roomId).emit("git:state", event);
+  });
+  agentSocketSubscriptions.add(unsubscribeGitState);
 
 
   const checkRateLimit = (socket: Socket) => {
@@ -520,6 +526,8 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId));
         socket.emit("agent:proposal_history", getPublicAgentProposalHistory(payload.roomId));
         socket.emit("agent:proposal_state", getPublicAgentProposalState(payload.roomId));
+        const gitSummary = projectService.getSummary(snapshot.workspace);
+        if (gitSummary) socket.emit("git:state", { roomId: payload.roomId, workspace: snapshot.workspace, summary: { ...gitSummary, diff: undefined }, version: snapshot.version, code: snapshot.code, language: snapshot.language, history: snapshot.history, operation: "status" });
         io.to(payload.roomId).emit("room:participants", snapshot.participants);
         void roomPersistence.saveRoom(snapshot);
       } catch (error) {

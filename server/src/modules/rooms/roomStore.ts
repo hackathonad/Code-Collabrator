@@ -15,11 +15,13 @@ import type {
   WorkspaceOperation,
   UserIdentityKind
 } from "./roomTypes";
-import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, MAX_WORKSPACE_CONTENT_LENGTH, updateWorkspaceFileContent } from "./workspaceService";
+import { activeWorkspaceFile, applyWorkspaceOperation, createWorkspace, createWorkspaceFromProjectFiles, MAX_WORKSPACE_CONTENT_LENGTH, updateWorkspaceFileContent } from "./workspaceService";
 import { clearAgentProposals, markAgentProposalsStale } from "../agent/agentEvents";
 import { invalidateProjectIndexCache } from "../agent/agentIntelligence";
 import { cancelAgentTasksForRoom, clearAgentTasks } from "../agent/agentTaskHistory";
 import { clearAgentMemory } from "../agent/agentMemory";
+import { projectService } from "../git/projectService";
+import { gitService } from "../git/gitService";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
@@ -336,6 +338,7 @@ export const roomStore = {
     const file = updateWorkspaceFileContent(room.workspace, fileId, code, userId);
     room.workspace.activeFileId = file.id;
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -383,6 +386,7 @@ export const roomStore = {
     room.workspace.ai.contextVersion += changes.length;
     room.workspace.activeFileId = changes[0].fileId;
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -414,6 +418,7 @@ export const roomStore = {
     room.workspace.updatedAt = activeFile.updatedAt;
     room.workspace.ai.contextVersion += 1;
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -522,6 +527,7 @@ export const roomStore = {
       room.workspace.ai.contextVersion += 1;
     }
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -573,6 +579,7 @@ export const roomStore = {
       room.workspace.ai.contextVersion += 1;
     }
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -599,6 +606,7 @@ export const roomStore = {
     clearAgentProposals(roomId);
     clearAgentTasks(roomId);
     clearAgentMemory(roomId);
+    projectService.clearRoom(roomId);
   },
 
   getRoomSnapshot(roomId: string) {
@@ -613,6 +621,7 @@ export const roomStore = {
     if (room.appliedWorkspaceOperationIds.includes(operation.id)) return { room: serializeRoom(room), duplicate: true };
     const activeFile = applyWorkspaceOperation(room.workspace, operation, userId);
     invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
     syncLegacyEditorProjection(room);
     room.version += 1;
     markAgentProposalsStale(room.roomId, room.version);
@@ -620,6 +629,35 @@ export const roomStore = {
     room.appliedWorkspaceOperationIds = [...room.appliedWorkspaceOperationIds, operation.id].slice(-250);
     addHistoryEntry(room, participant, "checkpoint", { workspaceOperation: operation.type, fileId: activeFile?.id, code: room.code, language: room.language });
     return { room: serializeRoom(room), duplicate: false };
+  },
+
+  replaceWorkspaceFromProject(roomId: string, userId: string, files: Array<{ path: string; content: string }>, project: { name: string; repositoryId: string; branch: string; provider: "github" }) {
+    const room = ensureRoom(roomId);
+    const participant = room.participants[userId];
+    if (!participant || !canManageContent(participant.role)) throw new Error("Permission denied");
+    if (room.isPaused) throw new Error("Room editing is paused");
+    const workspace = createWorkspaceFromProjectFiles(room.workspace, files, userId, project.name);
+    workspace.git = { repositoryId: project.repositoryId, branch: project.branch, provider: project.provider, repositoryRootId: workspace.rootFolderId };
+    room.workspace = workspace;
+    syncLegacyEditorProjection(room);
+    room.version += 1;
+    markAgentProposalsStale(room.roomId, room.version);
+    touchParticipantActivity(participant, room);
+    addHistoryEntry(room, participant, "checkpoint", { code: room.code, language: room.language, fileId: room.workspace.activeFileId });
+    invalidateProjectIndexCache(room.roomId, room.workspace.id);
+    gitService.invalidate(room.workspace.id);
+    return { room: serializeRoom(room) };
+  },
+
+  updateGitReference(roomId: string, userId: string, reference: { repositoryId: string; branch: string; provider: "github" }) {
+    const room = ensureRoom(roomId);
+    const participant = room.participants[userId];
+    if (!participant || !canManageContent(participant.role)) throw new Error("Permission denied");
+    room.workspace.git = { ...room.workspace.git, repositoryId: reference.repositoryId, branch: reference.branch, provider: reference.provider, repositoryRootId: room.workspace.git.repositoryRootId ?? room.workspace.rootFolderId };
+    room.workspace.updatedAt = Date.now();
+    room.version += 1;
+    touchParticipantActivity(participant, room);
+    return { room: serializeRoom(room) };
   },
 
   setParticipantStatus(roomId: string, userId: string, status: PresenceStatus) {

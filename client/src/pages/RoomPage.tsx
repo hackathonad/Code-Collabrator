@@ -41,6 +41,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const [isOutputOpen, setIsOutputOpen] = useState(false);
   const [workspacePanelTab, setWorkspacePanelTab] = useState<WorkspacePanelTab>("run");
   const [activity, setActivity] = useState<"explorer" | "source-control" | "ai" | "run" | "deploy" | "settings">("explorer");
+  const [mobileWorkspaceOpen, setMobileWorkspaceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [executionContext, setExecutionContext] = useState<ExecutionContext>(undefined);
@@ -54,7 +55,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const aiSelection = useAIStore((state) => state.selection);
   const setAISelection = useAIStore((state) => state.setSelection);
   const setAIAction = useAIStore((state) => state.setAction);
-  const { roomId: gitRoomId, repository, loading: gitLoading, error: gitError, initialize: initializeGit, clear: clearGit } = useGitStore();
+  const { roomId: gitRoomId, repository, loading: gitLoading, error: gitError, initialize: initializeGit, refresh: refreshGit, clear: clearGit } = useGitStore();
 
   const initialRoom = (location.state as { room?: import("../types/collaboration").RoomSnapshot; session?: import("../types/collaboration").UserSession } | null)?.room;
   const initialSession = (location.state as { room?: import("../types/collaboration").RoomSnapshot; session?: import("../types/collaboration").UserSession } | null)?.session;
@@ -109,6 +110,8 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
 
   const selectActivity = (next: "explorer" | "source-control" | "ai" | "run" | "deploy" | "settings") => {
     setActivity(next);
+    if (next === "explorer" || next === "source-control") setMobileWorkspaceOpen(true);
+    else setMobileWorkspaceOpen(false);
     if (next === "ai") {
       setActivePanel((current) => current === "ai" ? null : "ai");
     }
@@ -483,7 +486,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
       ) : null}
 
       <div className="flex min-h-0 min-w-0 flex-1">
-        <aside className="theme-panel-solid hidden w-[72px] shrink-0 flex-col items-center gap-2 border-r border-[var(--border)] py-3 md:flex" aria-label="Activity bar">
+        <aside className="theme-panel-solid hidden w-[72px] shrink-0 flex-col items-center gap-2 border-r border-[var(--border)] py-3 lg:flex" aria-label="Activity bar">
           {[
             ["explorer", FolderTree, "Explorer"],
             ["source-control", GitBranch, "Source control"],
@@ -499,9 +502,18 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
           ))}
         </aside>
 
-        <aside className="hidden w-[280px] shrink-0 overflow-hidden xl:block">
-          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => setActivePanel("chat")} onOpenActivity={() => setActivePanel("activity")} />
+        <aside className="hidden w-[280px] shrink-0 overflow-hidden lg:block">
+          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => setActivePanel("chat")} onOpenActivity={() => setActivePanel("activity")} onRefreshGit={refreshGit} />
         </aside>
+
+        <nav className="theme-panel-solid flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-2 py-1 lg:hidden" aria-label="Mobile workspace navigation">
+          <button type="button" onClick={() => selectActivity("explorer")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "explorer" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Explorer</button>
+          <button type="button" onClick={() => selectActivity("source-control")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "source-control" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Source control</button>
+          <button type="button" onClick={() => selectActivity("ai")} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">AI</button>
+          <button type="button" onClick={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
+        </nav>
+
+        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} onOpenActivity={() => { setMobileWorkspaceOpen(false); setActivePanel("activity"); }} onRefreshGit={refreshGit} /></div></div> : null}
 
         <section className="min-h-0 min-w-0 flex flex-1 flex-col p-2 sm:p-3">
           <div className="theme-panel-solid flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-[var(--shadow-soft)]">

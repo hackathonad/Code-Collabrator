@@ -7,14 +7,14 @@ import { isSupportedLanguage, sanitizeLanguage, sanitizeRoomId, sanitizeUsername
 
 const router = Router();
 
-const sendError = (response: { status: (status: number) => { json: (payload: unknown) => void } }, status: number, message: string) => {
+export const sendError = (response: { status: (status: number) => { json: (payload: unknown) => void } }, status: number, message: string) => {
   response.status(status).json({
     ok: false,
     message
   });
 };
 
-const roomErrorStatus = (error: unknown, fallback = 400) => {
+export const roomErrorStatus = (error: unknown, fallback = 400) => {
   const message = error instanceof Error ? error.message : "";
   if (/not found/i.test(message)) return 404;
   if (/permission denied|only the owner|valid room session/i.test(message)) return 403;
@@ -22,7 +22,7 @@ const roomErrorStatus = (error: unknown, fallback = 400) => {
   return fallback;
 };
 
-const loadRoomIfNeeded = async (roomId: string) => {
+export const loadRoomIfNeeded = async (roomId: string) => {
   if (roomStore.hasRoom(roomId)) {
     return true;
   }
@@ -47,7 +47,7 @@ const guestTokenFrom = (request: GuestRequest) => {
   return bodyToken || queryToken;
 };
 
-const roomParticipantId = (request: GuestRequest, roomId: string) => {
+export const roomParticipantId = (request: GuestRequest, roomId: string) => {
   const userId = verifyGuestSessionToken(roomId, guestTokenFrom(request));
   if (!userId) return "";
   try {

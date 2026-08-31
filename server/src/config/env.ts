@@ -62,6 +62,7 @@ export interface ServerEnvironment {
   openaiModel: string;
   anthropicApiKey: string;
   anthropicModel: string;
+  githubToken: string;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
@@ -73,6 +74,8 @@ export interface ServerEnvironment {
   agentRequestRateLimit: number;
   agentPatchRateLimit: number;
   agentValidationRateLimit: number;
+  githubApiRateLimit: number;
+  gitWriteRateLimit: number;
   agentMaxIterations: number;
   agentMaxToolCalls: number;
   agentTimeoutMs: number;
@@ -106,6 +109,9 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     openaiModel: source.OPENAI_MODEL?.trim() ?? "",
     anthropicApiKey: source.ANTHROPIC_API_KEY?.trim() ?? "",
     anthropicModel: source.ANTHROPIC_MODEL?.trim() ?? "",
+    // GitHub credentials are server-only. They are intentionally not part of
+    // featureAvailability or any API response.
+    githubToken: source.GITHUB_TOKEN?.trim() ?? "",
     livekitUrl: toLiveKitUrl(source.LIVEKIT_URL),
     livekitApiKey: source.LIVEKIT_API_KEY?.trim() ?? "",
     livekitApiSecret: source.LIVEKIT_API_SECRET?.trim() ?? "",
@@ -119,6 +125,8 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     agentRequestRateLimit: toBoundedNumber(source.AGENT_REQUEST_RATE_LIMIT, 12, 100),
     agentPatchRateLimit: toBoundedNumber(source.AGENT_PATCH_RATE_LIMIT, 20, 100),
     agentValidationRateLimit: toBoundedNumber(source.AGENT_VALIDATION_RATE_LIMIT, 8, 100),
+    githubApiRateLimit: toBoundedNumber(source.GITHUB_API_RATE_LIMIT, 30, 200),
+    gitWriteRateLimit: toBoundedNumber(source.GIT_WRITE_RATE_LIMIT, 12, 100),
     agentMaxIterations: toBoundedNumber(source.AGENT_MAX_ITERATIONS, 8, 8),
     agentMaxToolCalls: toBoundedNumber(source.AGENT_MAX_TOOL_CALLS, 20, 20),
     agentTimeoutMs: toBoundedNumber(source.AGENT_TIMEOUT_MS, 90_000, 90_000),
@@ -157,6 +165,7 @@ export const isAllowedClientOrigin = (origin: string | undefined) => {
 export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
+  github: Boolean(env.githubToken),
   ai: {
     ollama: Boolean(env.ollamaBaseUrl),
     gemini: Boolean(env.geminiApiKey),

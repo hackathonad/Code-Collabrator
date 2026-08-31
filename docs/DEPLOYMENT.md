@@ -48,7 +48,13 @@ Optional persistence variables:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 
-Optional AI and media variables are documented in [ENVIRONMENT.md](ENVIRONMENT.md). All provider credentials remain server-only.
+Optional AI, media, and GitHub variables are documented in [ENVIRONMENT.md](ENVIRONMENT.md). All provider credentials remain server-only.
+
+### GitHub project workflow
+
+Set `GITHUB_TOKEN` only as a Render/server environment variable if the deployment should import and update GitHub repositories. The Source control panel performs a guest-session-scoped explicit connection, repository list, branch selection, bounded import, status/diff, branch, commit-plan, push, pull, and pull-request workflow through the backend. The browser never receives the token and the API only targets the fixed GitHub API origin. The current foundation is deployment-token based, not OAuth or per-user GitHub identity; scope the token to the repositories the deployment is allowed to use.
+
+The import limit is 500 files and 4 MB of text. Secret-like paths and binary/oversized files are not imported. Push is non-force and rechecks the remote branch head, while pull and branch switching stop when local collaborator changes exist. The workspace/project metadata is compatible with existing room snapshots, but the in-memory import baseline is lost on a backend restart and must be re-imported; no database migration is applied automatically. Do not add `GITHUB_TOKEN` or any GitHub credential to Vercel `VITE_*` variables.
 
 ### AI on the persistent backend
 
@@ -108,6 +114,7 @@ Execution status can be included in the existing AI request context when a runne
 4. Join from a second browser and verify editor, chat, presence, typing, and cursors.
 5. Confirm a non-owner cannot delete or manage the room.
 6. Delete as the owner and confirm all clients leave, Quick Rejoin removes the room, and GET/JOIN return 404.
+7. If GitHub is configured, connect from Source control, import a test repository, edit a file with a second guest, verify status/diff, stage and prepare a commit, push explicitly, pull a remote change, and create a test pull request. Verify that unsaved local changes block pull/branch switch and that no token appears in browser storage or API responses.
 
 After any source or Vercel-variable change, trigger a new **Production** deployment. A previously deployed Vercel build does not change when environment variables are edited. The landing page must be guest-first (display-name field and Create/Join Room controls); a deployed page showing Sign in/Sign up is an obsolete build and must be rebuilt from the current repository.
 

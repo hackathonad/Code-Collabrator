@@ -18,14 +18,16 @@ interface WorkspaceExplorerProps {
   mode?: "explorer" | "source-control";
   onOpenMessages?: () => void;
   onOpenActivity?: () => void;
+  onRefreshGit?: () => Promise<void>;
 }
 
 const byName = <T extends { name: string }>(left: T, right: T) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 const operationId = () => crypto.randomUUID();
 
-export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenMessages, onOpenActivity }: WorkspaceExplorerProps) => {
+export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenMessages, onOpenActivity, onRefreshGit }: WorkspaceExplorerProps) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [clipboardFileId, setClipboardFileId] = useState<string | null>(null);
+  const [fileQuery, setFileQuery] = useState("");
   const foldersByParent = useMemo(() => {
     const index = new Map<string, WorkspaceFolder[]>();
     Object.values(workspace.folders).forEach((folder) => {
@@ -96,8 +98,15 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
 
   const renderFolder = (folder: WorkspaceFolder, depth: number) => {
     const isCollapsed = collapsed.has(folder.id);
-    const childFolders = foldersByParent.get(folder.id) ?? [];
-    const childFiles = filesByParent.get(folder.id) ?? [];
+    const query = fileQuery.trim().toLocaleLowerCase();
+    const childFiles = (filesByParent.get(folder.id) ?? []).filter((file) => !query || file.name.toLocaleLowerCase().includes(query));
+    const hasMatchingDescendant = (folderId: string): boolean => {
+      const directFiles = (filesByParent.get(folderId) ?? []).some((file) => !query || file.name.toLocaleLowerCase().includes(query));
+      if (!query) return true;
+      return directFiles || (foldersByParent.get(folderId) ?? []).some((child) => hasMatchingDescendant(child.id));
+    };
+    const childFolders = (foldersByParent.get(folder.id) ?? []).filter((child) => hasMatchingDescendant(child.id));
+    if (query && !childFiles.length && !childFolders.length && folder.id !== workspace.rootFolderId) return null;
     return <div key={folder.id}>
       <div className="group flex min-w-0 items-center gap-1 rounded-md pr-1 text-sm text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]" style={{ paddingLeft: 6 + depth * 14 }}>
         <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 py-1.5 text-left" onClick={() => setCollapsed((current) => { const next = new Set(current); if (isCollapsed) next.delete(folder.id); else next.add(folder.id); return next; })}>
@@ -118,7 +127,7 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
   const restore = workspace.trash.find((entry) => entry.kind === "file");
   if (mode === "source-control") return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
     <div className="flex items-center justify-between gap-2 px-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Workspace</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">Source control</h2></div><button type="button" onClick={refreshWorkspace} title="Refresh workspace status" className="rounded p-1.5 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"><RefreshCw className="h-4 w-4" /></button></div>
-    <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel repository={repository} loading={gitLoading} error={gitError} /></div>
+    <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel roomId={roomId} session={session} repository={repository} loading={gitLoading} error={gitError} onRefresh={onRefreshGit ?? (async () => undefined)} onNotify={onNotify} /></div>
     <div className="mx-3 mt-3 flex items-center justify-between gap-2 border-t border-[var(--border)] pt-3"><span className="truncate font-mono text-[10px] text-[var(--text-faint)]">{roomId}</span><button type="button" onClick={() => void copyRoomId()} className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]" title="Copy room ID"><Copy className="h-3.5 w-3.5" /></button></div>
   </div>;
   return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
@@ -128,6 +137,7 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
     </div>
     {clipboardFileId ? <button type="button" className="mx-3 mt-2 rounded border border-[var(--border)] px-2 py-1 text-left text-[11px] text-[var(--text-muted)] hover:bg-[var(--badge-bg)]" onClick={() => emit({ type: "paste", sourceId: clipboardFileId, targetParentId: workspace.rootFolderId })}>Paste copied file in root</button> : null}
     {restore ? <button type="button" className="mx-3 mt-2 flex items-center gap-1 rounded border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--text-muted)] hover:bg-[var(--badge-bg)]" onClick={() => emit({ type: "restore-file", nodeId: restore.id })}><RotateCcw className="h-3 w-3" /> Restore {restore.files[0]?.name}</button> : null}
+    <div className="mx-3 mt-3"><input value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder="Search files" aria-label="Search workspace files" className="theme-input w-full rounded border px-2 py-1.5 text-xs outline-none" /></div>
     <div className="mt-3 min-h-0 flex-1 overflow-auto px-2">{renderFolder(workspace.folders[workspace.rootFolderId], 0)}</div>
     <div className="mx-3 mt-3 border-t border-[var(--border)] pt-3">
       <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Room</p>

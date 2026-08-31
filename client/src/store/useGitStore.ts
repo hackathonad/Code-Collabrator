@@ -21,6 +21,7 @@ interface GitStoreState {
   error: string | null;
   initialize: (roomId: string, workspaceId: string) => Promise<void>;
   refresh: () => Promise<void>;
+  setRepository: (repository: RepositorySummary) => void;
   clear: () => void;
 }
 
@@ -53,6 +54,10 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     } catch (error) {
       set({ loading: false, error: error instanceof Error ? error.message : "Repository state is unavailable" });
     }
+  },
+  setRepository: (repository) => {
+    const recentRepositories = repository.repository ? saveRecentRepository(repository.repository) : get().recentRepositories;
+    set({ repository, recentRepositories, loading: false, error: null });
   },
   clear: () => set({ roomId: null, workspaceId: null, repository: null, error: null, loading: false })
 }));

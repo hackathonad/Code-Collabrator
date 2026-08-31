@@ -5,8 +5,10 @@ import { storage } from "../lib/storage";
 import { useRoomStore } from "../store/useRoomStore";
 import { useMediaStore } from "../store/useMediaStore";
 import { useAIStore } from "../store/useAIStore";
+import { useGitStore } from "../store/useGitStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
 import type { AgentProposalEvent, AgentTaskEvent, AgentTaskPublic } from "../types/agent";
+import type { GitStateEvent } from "../types/git";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.replace(/\/+$/, "") ?? "";
 
@@ -127,6 +129,13 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       socket.on("editor:sync", (payload: { code: string; language: SupportedLanguage; version: number; fileId?: string }) => {
         syncEditor(payload.code, payload.language, payload.version, payload.fileId);
         useAIStore.getState().markAgentPatchesStale(payload.version);
+      });
+
+      socket.on("git:state", (event: GitStateEvent) => {
+        if (!event || event.roomId !== roomId) return;
+        useGitStore.getState().setRepository(event.summary);
+        syncWorkspace(event.workspace, event.code, event.language, event.version, event.history);
+        useAIStore.getState().markAgentPatchesStale(event.version);
       });
 
       socket.on("agent:proposal", (event: AgentProposalEvent) => {

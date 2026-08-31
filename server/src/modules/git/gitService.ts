@@ -1,5 +1,7 @@
 import type { GitOperationRequest, GitProvider, GitProviderAdapter, GitService, RepositorySummary } from "./gitTypes";
 import { GitOperationUnavailableError } from "./gitTypes";
+import { repositorySummaryForWorkspace } from "./projectService";
+import type { WorkspaceState } from "../rooms/roomTypes";
 
 const CACHE_TTL_MS = 15_000;
 
@@ -14,6 +16,11 @@ export const createGitService = (initialAdapters: GitProviderAdapter[] = []): Gi
     const cached = cache.get(workspace.id);
     if (cached && cached.expiresAt > Date.now()) return { ...cached.summary, status: { ...cached.summary.status, cached: true } };
 
+    const projectSummary = "files" in workspace ? repositorySummaryForWorkspace(workspace as WorkspaceState) : null;
+    if (projectSummary) {
+      cache.set(workspace.id, { expiresAt: Date.now() + CACHE_TTL_MS, summary: projectSummary });
+      return projectSummary;
+    }
     const repositoryId = workspace.git?.repositoryId;
     const mappedProvider = workspace.git?.provider;
     const adapter = mappedProvider && mappedProvider !== "unknown" ? adapters.get(mappedProvider) : undefined;

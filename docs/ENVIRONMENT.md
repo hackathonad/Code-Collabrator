@@ -25,11 +25,12 @@ Copy `client/.env.example` and `server/.env.example` for local development. The 
 | `OPENAI_MODEL` | Server | Optional | OpenAI model override. | No |
 | `ANTHROPIC_API_KEY` | Server | Optional | Server-only Anthropic credential. | No |
 | `ANTHROPIC_MODEL` | Server | Optional | Anthropic model override. | No |
+| `GITHUB_TOKEN` | Server | Optional | Server-side GitHub token used for explicitly connected guest-room project operations. OAuth is not enabled. | No |
 | `LIVEKIT_URL` | Server | Optional; all three LiveKit values are required together | Public `ws:`/`wss:` media endpoint. | No |
 | `LIVEKIT_API_KEY` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
 | `LIVEKIT_API_SECRET` | Server | Optional; all three LiveKit values are required together | LiveKit signing credential. | No |
 
-Agent safety limits are configurable on the server and remain bounded even when environment values are malformed or too large: `API_RATE_LIMIT` (default 180, maximum 2,000), `AI_REQUEST_RATE_LIMIT` (20, maximum 200), `AGENT_REQUEST_RATE_LIMIT` (12, maximum 100), `AGENT_PATCH_RATE_LIMIT` (20, maximum 100), and `AGENT_VALIDATION_RATE_LIMIT` (8, maximum 100) are per-minute limits. `AGENT_MAX_ITERATIONS` (8), `AGENT_MAX_TOOL_CALLS` (20), and `AGENT_TIMEOUT_MS` (90,000) can only be lowered within their hard safety bounds.
+Agent safety limits are configurable on the server and remain bounded even when environment values are malformed or too large: `API_RATE_LIMIT` (default 180, maximum 2,000), `AI_REQUEST_RATE_LIMIT` (20, maximum 200), `AGENT_REQUEST_RATE_LIMIT` (12, maximum 100), `AGENT_PATCH_RATE_LIMIT` (20, maximum 100), and `AGENT_VALIDATION_RATE_LIMIT` (8, maximum 100) are per-minute limits. GitHub project operations use `GITHUB_API_RATE_LIMIT` (30, maximum 200) and `GIT_WRITE_RATE_LIMIT` (12, maximum 100), keyed by room and guest session. `AGENT_MAX_ITERATIONS` (8), `AGENT_MAX_TOOL_CALLS` (20), and `AGENT_TIMEOUT_MS` (90,000) can only be lowered within their hard safety bounds.
 
 Supabase is database-only in this product. There are no browser Supabase variables and no Supabase Auth session requirement. If persistence is disabled or unavailable, the server keeps rooms in memory and `/ready` reports `persistence.configured`, `persistence.healthy`, and a generic status without exposing provider details to the browser.
 
@@ -46,6 +47,16 @@ Agent requests use a bounded conversation/task continuity hint and server-issued
 The Phase 6F index cache is limited to 100 room/workspace entries and invalidates on content or workspace-structure changes. Each index is capped at 500 files, 20 ranked relevant files, and bounded symbols/imports/summaries. Debug diagnoses are limited to eight hypotheses per response with five short evidence items each. Active-agent cancellation is server-aware, room deletion aborts related work, task timers close orphaned nonterminal tasks, and pre-cancelled validation exits before creating a child process. `/ready` reports backend, persistence, provider, and agent readiness without exposing credentials; configured but unhealthy persistence returns a non-ready status.
 
 `SUPABASE_JWT_SECRET` and `PISTON_URL` are not read by the current source and are not deployment requirements. OpenAI, Anthropic, and OpenRouter credentials are read only by the server-side AI adapters.
+
+## GitHub project workflow
+
+Set `GITHUB_TOKEN` only on the persistent backend when repository workflows are wanted. The token is never accepted from the browser, returned by an API, stored in localStorage, or broadcast over Socket.IO. A guest explicitly connects GitHub inside the Source control panel, then selects a repository and branch. Imported text files are copied into the existing bounded virtual workspace (maximum 500 files and 4 MB); secret-like files, binary files, and oversized files are excluded.
+
+The workflow exposes repository metadata, branch listing, working-tree status, staged changes, bounded diffs, branch creation, branch switching with unsaved-change protection, commit planning, non-force push, safe pull/fast-forward, and pull-request creation. Commit, push, branch creation, branch switching, pull, and PR creation are explicit user actions; the AI can analyze or suggest text but cannot perform them silently. GitHub API errors, rate limits, remote-ahead state, and invalid paths are normalized.
+
+This deployment uses a server-configured token foundation rather than OAuth. It is suitable for a trusted deployment token and repositories that token may access, but it is not per-guest GitHub identity. Do not place a personal token in a client variable. Project metadata and the room workspace are persisted through the existing room snapshot when Supabase is enabled; the in-memory Git baseline is rebuilt by re-importing after a backend restart. No GitHub migration is applied automatically.
+
+The agent receives bounded Git status/diff metadata through the existing room context engine. Repository content is untrusted data and is never treated as instructions. The GitHub adapter only calls the fixed `https://api.github.com` origin; arbitrary remotes, shell Git, force-push, deletion, and history rewriting are not exposed.
 
 ## AI provider setup
 
