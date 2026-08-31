@@ -22,6 +22,7 @@ import { cancelAgentTasksForRoom, clearAgentTasks } from "../agent/agentTaskHist
 import { clearAgentMemory } from "../agent/agentMemory";
 import { projectService } from "../git/projectService";
 import { gitService } from "../git/gitService";
+import { executionService } from "../execution/executionService";
 
 const rooms = new Map<string, RoomState>();
 const accentPalette: ParticipantAccent[] = ["blue", "emerald", "amber", "rose", "violet", "cyan"];
@@ -600,6 +601,7 @@ export const roomStore = {
     }
 
     room.deletedAt = Date.now();
+    executionService.clearRoom(roomId);
     cancelAgentTasksForRoom(roomId);
     rooms.delete(roomId);
     invalidateProjectIndexCache(room.roomId, room.workspace.id);

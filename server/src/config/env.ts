@@ -76,6 +76,10 @@ export interface ServerEnvironment {
   agentValidationRateLimit: number;
   githubApiRateLimit: number;
   gitWriteRateLimit: number;
+  executionRateLimit: number;
+  executionTimeoutMs: number;
+  executionOutputLimit: number;
+  executionMaxConcurrent: number;
   agentMaxIterations: number;
   agentMaxToolCalls: number;
   agentTimeoutMs: number;
@@ -127,6 +131,10 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     agentValidationRateLimit: toBoundedNumber(source.AGENT_VALIDATION_RATE_LIMIT, 8, 100),
     githubApiRateLimit: toBoundedNumber(source.GITHUB_API_RATE_LIMIT, 30, 200),
     gitWriteRateLimit: toBoundedNumber(source.GIT_WRITE_RATE_LIMIT, 12, 100),
+    executionRateLimit: toBoundedNumber(source.EXECUTION_RATE_LIMIT, 10, 100),
+    executionTimeoutMs: toBoundedNumber(source.EXECUTION_TIMEOUT_MS, 30_000, 90_000),
+    executionOutputLimit: toBoundedNumber(source.EXECUTION_OUTPUT_LIMIT, 16_000, 24_000),
+    executionMaxConcurrent: toBoundedNumber(source.EXECUTION_MAX_CONCURRENT, 2, 4),
     agentMaxIterations: toBoundedNumber(source.AGENT_MAX_ITERATIONS, 8, 8),
     agentMaxToolCalls: toBoundedNumber(source.AGENT_MAX_TOOL_CALLS, 20, 20),
     agentTimeoutMs: toBoundedNumber(source.AGENT_TIMEOUT_MS, 90_000, 90_000),
@@ -166,6 +174,7 @@ export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
   github: Boolean(env.githubToken),
+  execution: true,
   ai: {
     ollama: Boolean(env.ollamaBaseUrl),
     gemini: Boolean(env.geminiApiKey),

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { copyTextToClipboard } from "../src/lib/clipboard";
 import { downloadSourceFile, runCodeExternally, sourceFilenameForLanguage } from "../src/lib/editorActions";
+import { useExecutionStore } from "../src/store/useExecutionStore";
+import type { ExecutionRecord } from "../src/types/execution";
 
 test("source filenames preserve compatible extensions and correct mismatches", () => {
   assert.equal(sourceFilenameForLanguage("main.py", "python"), "main.py");
@@ -50,4 +52,36 @@ test("external runner reports popup blocking instead of claiming execution", asy
     if (previousNavigator) Object.defineProperty(globalThis, "navigator", previousNavigator); else delete (globalThis as { navigator?: Navigator }).navigator;
     if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow); else delete (globalThis as { window?: Window }).window;
   }
+});
+
+const execution = (id: string, roomId = "room", createdAt = Number(id), status: ExecutionRecord["status"] = "completed"): ExecutionRecord => ({
+  executionId: id, roomId, workspaceId: "workspace", ownerId: "user", action: "tests", command: "npm test", status, exitCode: status === "completed" ? 0 : null, durationMs: 1, output: "bounded", errorSummary: null, createdAt
+});
+
+test("execution state is room-scoped, deduplicated, and bounded", () => {
+  useExecutionStore.setState({ roomId: "room", workspaceId: "workspace", records: [], activeExecutionId: null, error: null });
+  useExecutionStore.getState().receive(execution("1", "other", 1));
+  assert.equal(useExecutionStore.getState().records.length, 0);
+  for (let index = 1; index <= 45; index += 1) useExecutionStore.getState().receive(execution(String(index), "room", index));
+  assert.equal(useExecutionStore.getState().records.length, 40);
+  useExecutionStore.getState().receive({ ...execution("45", "room", 45), output: "older replacement" });
+  assert.equal(useExecutionStore.getState().records[0].output, "older replacement");
+});
+
+test("execution state marks active work and clears it at terminal status", () => {
+  useExecutionStore.setState({ roomId: "room", workspaceId: "workspace", records: [], activeExecutionId: null, error: null });
+  useExecutionStore.getState().receive(execution("running", "room", 2, "running"));
+  assert.equal(useExecutionStore.getState().activeExecutionId, "running");
+  useExecutionStore.getState().receive(execution("running", "room", 2, "completed"));
+  assert.equal(useExecutionStore.getState().activeExecutionId, null);
+});
+
+test("execution history hydrates only the announced room and workspace", () => {
+  useExecutionStore.setState({ roomId: null, workspaceId: null, records: [], activeExecutionId: null, error: null });
+  useExecutionStore.getState().hydrate("room", "workspace", [execution("history", "room", 3, "completed"), { ...execution("other-workspace", "room", 4), workspaceId: "other" }]);
+  assert.equal(useExecutionStore.getState().roomId, "room");
+  assert.equal(useExecutionStore.getState().workspaceId, "workspace");
+  assert.deepEqual(useExecutionStore.getState().records.map((record) => record.executionId), ["history"]);
+  useExecutionStore.getState().hydrate("other-room", "workspace", [execution("leak", "other-room", 5)]);
+  assert.deepEqual(useExecutionStore.getState().records.map((record) => record.executionId), ["history"]);
 });

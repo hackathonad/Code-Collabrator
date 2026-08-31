@@ -27,7 +27,7 @@ interface CollaborativeEditorProps {
   onSelectionChange?: (selection: { fileId: string; code: string; startOffset: number; endOffset: number } | null) => void;
   onDiagnosticsChange?: (diagnostics: AgentDiagnostic[]) => void;
   onOpenAIAssistant?: (action?: AIAction) => void;
-  onEditorAIReady?: (actions: { insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean }) => void;
+  onEditorAIReady?: (actions: { insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean; revealLocation: (fileId: string, line: number, column: number) => boolean }) => void;
 }
 
 const languageMap = {
@@ -134,6 +134,12 @@ export const CollaborativeEditor = ({
       replaceFile: (nextCode) => {
         const model = editor.getModel(); if (!model) return false;
         const fullRange = model.getFullModelRange(); editor.executeEdits("ai-assistant", [{ range: fullRange, text: nextCode, forceMoveMarkers: true }]); editor.focus(); return true;
+      },
+      revealLocation: (targetFileId, line, column) => {
+        if (targetFileId !== fileIdRef.current) return false;
+        const model = editor.getModel(); if (!model) return false;
+        const position = { lineNumber: Math.min(Math.max(line, 1), model.getLineCount()), column: Math.min(Math.max(column, 1), model.getLineMaxColumn(Math.min(Math.max(line, 1), model.getLineCount()))) };
+        editor.setPosition(position); editor.revealPositionInCenter(position); editor.focus(); return true;
       }
     });
 

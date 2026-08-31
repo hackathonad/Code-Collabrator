@@ -14,6 +14,7 @@ import projectRoutes from "./routes/projectRoutes";
 import aiRoutes from "./routes/aiRoutes";
 import agentRoutes from "./routes/agentRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
+import executionRoutes from "./routes/executionRoutes";
 import { roomPersistence } from "./services/roomPersistence";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
@@ -76,6 +77,7 @@ export const createApp = () => {
       persistence,
       ai: { healthy: providers.some((provider) => provider.available), providers },
       agent: { available: true, limits: { maxIterations: env.agentMaxIterations, maxToolCalls: env.agentMaxToolCalls, timeoutMs: env.agentTimeoutMs } },
+      execution: { available: true, scope: "server-project", limits: { timeoutMs: env.executionTimeoutMs, outputLimit: env.executionOutputLimit, maxConcurrent: env.executionMaxConcurrent } },
       features: featureAvailability()
     });
   });
@@ -85,6 +87,7 @@ export const createApp = () => {
   app.use("/api/ai", agentRoutes);
   app.use("/api/rooms", roomRoutes);
   app.use("/api/rooms", projectRoutes);
+  app.use("/api/rooms", executionRoutes);
   app.use("/api", (_request, response) => response.status(404).json({ ok: false, message: "API route not found." }));
   app.use((error: unknown, _request: express.Request, response: express.Response, next: express.NextFunction) => {
     if (response.headersSent) return next(error);

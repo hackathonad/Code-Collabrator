@@ -9,6 +9,8 @@ import { useGitStore } from "../store/useGitStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
 import type { AgentProposalEvent, AgentTaskEvent, AgentTaskPublic } from "../types/agent";
 import type { GitStateEvent } from "../types/git";
+import type { ExecutionEvent, ExecutionRecord } from "../types/execution";
+import { useExecutionStore } from "../store/useExecutionStore";
 
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL?.replace(/\/+$/, "") ?? "";
 
@@ -149,6 +151,14 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       socket.on("agent:task_history", (tasks: AgentTaskPublic[]) => useAIStore.getState().setAgentTaskHistory(tasks));
       socket.on("agent:proposal_history", (events: AgentProposalEvent[]) => useAIStore.getState().setAgentProposalHistory(events));
       socket.on("agent:proposal_state", (proposals: import("../types/agent").AgentProposalPublic[]) => useAIStore.getState().setAgentProposalState(proposals));
+      socket.on("execution:history", (records: ExecutionRecord[]) => {
+        const scopedRecords = records.filter((record) => record.roomId === roomId);
+        if (scopedRecords.length) useExecutionStore.getState().hydrate(roomId, scopedRecords[0].workspaceId, scopedRecords);
+      });
+      socket.on("execution:state", (event: ExecutionEvent) => {
+        if (!event?.record || event.record.roomId !== roomId) return;
+        useExecutionStore.getState().receive(event.record);
+      });
 
       socket.on("room:deleted", () => {
         void useMediaStore.getState().leave();

@@ -1,6 +1,6 @@
 ﻿import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Cloud, FolderTree, GitBranch, Phone, Settings, TerminalSquare, Users } from "lucide-react";
+import { Bot, Cloud, FolderTree, GitBranch, Phone, Search, Settings, TerminalSquare, Users } from "lucide-react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { AIAssistantPanel } from "../components/ai/AIAssistantPanel";
@@ -12,6 +12,7 @@ import { RoomActivityPanel } from "../components/sidebar/RoomActivityPanel";
 import { WorkspaceExplorer } from "../components/workspace/WorkspaceExplorer";
 import { WorkspaceTabs } from "../components/workspace/WorkspaceTabs";
 import { WorkspaceOutputPanel, type WorkspacePanelTab } from "../components/workspace/WorkspaceOutputPanel";
+import { CommandPalette, type WorkspaceCommand } from "../components/workspace/CommandPalette";
 import { SettingsModal } from "../components/ui/SettingsModal";
 import { ToastViewport } from "../components/ui/ToastViewport";
 import { useToast } from "../hooks/useToast";
@@ -23,9 +24,11 @@ import { useRoomStore } from "../store/useRoomStore";
 import { useGitStore } from "../store/useGitStore";
 import { useAIStore } from "../store/useAIStore";
 import { useMediaStore } from "../store/useMediaStore";
+import { useExecutionStore } from "../store/useExecutionStore";
 import { useTheme } from "../context/ThemeContext";
 import type { RoomSnapshot, SupportedLanguage } from "../types/collaboration";
 import type { AgentDiagnostic, AgentPatch, ValidationCategory } from "../types/agent";
+import type { ExecutionAction, ExecutionRecord } from "../types/execution";
 
 type CollaborationPanel = "chat" | "ai" | "people" | "activity" | null;
 type ExecutionContext = { output: string; failed: boolean } | undefined;
@@ -40,13 +43,14 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const [isMediaOpen, setIsMediaOpen] = useState(false);
   const [isOutputOpen, setIsOutputOpen] = useState(false);
   const [workspacePanelTab, setWorkspacePanelTab] = useState<WorkspacePanelTab>("run");
-  const [activity, setActivity] = useState<"explorer" | "source-control" | "ai" | "run" | "deploy" | "settings">("explorer");
+  const [activity, setActivity] = useState<"explorer" | "search" | "source-control" | "ai" | "run" | "deploy" | "settings">("explorer");
   const [mobileWorkspaceOpen, setMobileWorkspaceOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [executionContext, setExecutionContext] = useState<ExecutionContext>(undefined);
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostic[]>([]);
-  const editorAIActionsRef = useRef<{ insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean } | null>(null);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const editorAIActionsRef = useRef<{ insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean; revealLocation: (fileId: string, line: number, column: number) => boolean } | null>(null);
   const { room, session, connectionStatus, error, chatTypingUsers, editorTypingUsers, setRoom, setSession, setError } =
     useRoomStore();
   const { toasts, pushToast, dismissToast } = useToast();
@@ -55,15 +59,60 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const aiSelection = useAIStore((state) => state.selection);
   const setAISelection = useAIStore((state) => state.setSelection);
   const setAIAction = useAIStore((state) => state.setAction);
+  const setAIDraft = useAIStore((state) => state.setDraft);
   const { roomId: gitRoomId, repository, loading: gitLoading, error: gitError, initialize: initializeGit, refresh: refreshGit, clear: clearGit } = useGitStore();
+  const executionRecords = useExecutionStore((state) => state.records);
+  const executionCapabilities = useExecutionStore((state) => state.capabilities);
+  const executionError = useExecutionStore((state) => state.error);
+  const initializeExecution = useExecutionStore((state) => state.initialize);
+  const startExecution = useExecutionStore((state) => state.start);
+  const cancelExecution = useExecutionStore((state) => state.cancel);
+  const clearExecution = useExecutionStore((state) => state.clear);
 
   const initialRoom = (location.state as { room?: import("../types/collaboration").RoomSnapshot; session?: import("../types/collaboration").UserSession } | null)?.room;
   const initialSession = (location.state as { room?: import("../types/collaboration").RoomSnapshot; session?: import("../types/collaboration").UserSession } | null)?.session;
   const homePath = guestMode ? "/guest" : "/app";
+  const currentRoomId = room?.roomId ?? "";
+  const currentWorkspaceId = room?.workspace.id ?? "";
+
+  const selectActivity = (next: "explorer" | "search" | "source-control" | "ai" | "run" | "deploy" | "settings") => {
+    setActivity(next);
+    if (next === "explorer" || next === "search" || next === "source-control") setMobileWorkspaceOpen(true);
+    else setMobileWorkspaceOpen(false);
+    if (next === "ai") setActivePanel((current) => current === "ai" ? null : "ai");
+    if (next === "run") { setWorkspacePanelTab("run"); setIsOutputOpen(true); }
+    if (next === "deploy") pushToast("Deploy this workspace from your connected hosting provider.");
+    if (next === "settings") setSettingsOpen(true);
+  };
 
   useEffect(() => {
     if (aiSelection && room && aiSelection.fileId !== room.workspace.activeFileId) setAISelection(null);
   }, [aiSelection, room, setAISelection]);
+
+  useEffect(() => {
+    if (!currentRoomId || !currentWorkspaceId || !session) { clearExecution(); return; }
+    void initializeExecution(currentRoomId, currentWorkspaceId, session);
+    return () => clearExecution();
+  }, [clearExecution, currentRoomId, currentWorkspaceId, initializeExecution, session]);
+
+  useEffect(() => {
+    const latest = executionRecords[0];
+    if (!latest || !latest.output || ["queued", "running"].includes(latest.status)) return;
+    setExecutionContext({ output: latest.output, failed: latest.status !== "completed" });
+  }, [executionRecords]);
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const modifier = event.ctrlKey || event.metaKey;
+      if (!modifier) return;
+      if (event.key.toLowerCase() === "p") { event.preventDefault(); setCommandPaletteOpen(true); }
+      if (event.key.toLowerCase() === "f" && event.shiftKey) { event.preventDefault(); setActivity("search"); setMobileWorkspaceOpen(true); }
+      if (event.key === "`") { event.preventDefault(); setWorkspacePanelTab("terminal"); setIsOutputOpen(true); }
+      if (event.key.toLowerCase() === "s" && !event.shiftKey) { event.preventDefault(); pushToast("Edits sync automatically with the room."); }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [pushToast]);
 
   useEffect(() => {
     setRoom(null);
@@ -106,18 +155,6 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const openMedia = () => {
     setActivePanel("chat");
     setIsMediaOpen(true);
-  };
-
-  const selectActivity = (next: "explorer" | "source-control" | "ai" | "run" | "deploy" | "settings") => {
-    setActivity(next);
-    if (next === "explorer" || next === "source-control") setMobileWorkspaceOpen(true);
-    else setMobileWorkspaceOpen(false);
-    if (next === "ai") {
-      setActivePanel((current) => current === "ai" ? null : "ai");
-    }
-    if (next === "run") { setWorkspacePanelTab("run"); setIsOutputOpen(true); }
-    if (next === "deploy") pushToast("Deploy this workspace from your connected hosting provider.");
-    if (next === "settings") setSettingsOpen(true);
   };
 
   const insertAICode = (generatedCode: string) => {
@@ -314,6 +351,25 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     }
   };
 
+  const handleRunAction = async (action: ExecutionAction, target?: string): Promise<ExecutionRecord | null> => {
+    if (!room || !session) return null;
+    try {
+      const record = await startExecution(room.roomId, room.workspace.id, session, action, target);
+      setExecutionContext(record.output ? { output: record.output, failed: record.status !== "completed" } : undefined);
+      pushToast(record.status === "unavailable" ? "This execution is unavailable for virtual room source." : `${action} queued`);
+      return record;
+    } catch (issue) {
+      pushToast(issue instanceof Error ? issue.message : "The safe execution request failed");
+      return null;
+    }
+  };
+
+  const handleCancelExecution = async (executionId: string) => {
+    if (!room || !session) return;
+    try { await cancelExecution(room.roomId, room.workspace.id, session, executionId); pushToast("Execution cancelled"); }
+    catch (issue) { pushToast(issue instanceof Error ? issue.message : "Execution could not be cancelled"); }
+  };
+
   const handleCopyCode = async () => {
     if (!room) {
       return false;
@@ -444,10 +500,49 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
 
   const activeParticipants = room.participants.filter((participant) => participant.isOnline).length;
   const isOwner = room.ownerId === session.userId;
+  const openDiagnostic = (diagnostic: AgentDiagnostic) => {
+    const targetFileId = diagnostic.fileId && room.workspace.files[diagnostic.fileId] ? diagnostic.fileId : room.workspace.activeFileId;
+    if (targetFileId !== room.workspace.activeFileId) socketRef.current?.emit("workspace:operation", { roomId: room.roomId, userId: session.userId, operation: { id: crypto.randomUUID(), type: "set-active-file", nodeId: targetFileId } });
+    if (diagnostic.startLine) window.setTimeout(() => { editorAIActionsRef.current?.revealLocation(targetFileId, diagnostic.startLine ?? 1, diagnostic.startColumn ?? 1); }, 80);
+    setWorkspacePanelTab("problems");
+    setIsOutputOpen(true);
+  };
+  const debugDiagnostic = (diagnostic: AgentDiagnostic) => {
+    openDiagnostic(diagnostic);
+    setAIAction("fix");
+    setAIDraft("Debug this problem and propose a safe fix.");
+    setActivePanel("ai");
+  };
+  const reviewDiff = () => {
+    setAIAction("review");
+    setAIDraft("Review the actual current source-control diff in this workspace. Identify correctness, security, unintended changes, regressions, and scope creep. Do not propose edits until you explain the findings.");
+    setActivePanel("ai");
+    pushToast("AI diff review is ready in the assistant panel");
+  };
+  const openWorkspaceFile = (fileId: string) => {
+    socketRef.current?.emit("workspace:operation", { roomId: room.roomId, userId: session.userId, operation: { id: crypto.randomUUID(), type: "set-active-file", nodeId: fileId } });
+  };
+  const workspaceCommands: WorkspaceCommand[] = [
+    { id: "open-file", label: "Open current file", hint: room.workspace.files[room.workspace.activeFileId]?.name, run: () => { setActivity("explorer"); setMobileWorkspaceOpen(true); } },
+    { id: "search-project", label: "Search project", hint: "Ctrl/Cmd+Shift+F", run: () => selectActivity("search") },
+    { id: "save", label: "Save workspace", hint: "Changes sync automatically", run: () => pushToast("Edits sync automatically with the room.") },
+    { id: "close-tab", label: "Close active tab", hint: room.workspace.openFileIds.length > 1 ? "Close the current editor tab" : "The last tab stays open", run: () => { if (room.workspace.openFileIds.length > 1) socketRef.current?.emit("workspace:operation", { roomId: room.roomId, userId: session.userId, operation: { id: crypto.randomUUID(), type: "set-open-files", fileIds: room.workspace.openFileIds.filter((id) => id !== room.workspace.activeFileId) } }); } },
+    { id: "toggle-explorer", label: "Toggle Explorer", run: () => selectActivity("explorer") },
+    { id: "toggle-ai", label: "Open AI assistant", run: () => { setActivePanel("ai"); setActivity("ai"); } },
+    { id: "toggle-terminal", label: "Toggle terminal", hint: "Ctrl/Cmd+`", run: () => { setWorkspacePanelTab("terminal"); setIsOutputOpen(true); } },
+    { id: "run-project", label: "Run project", hint: "External runner only for room source", run: () => { setWorkspacePanelTab("run"); setIsOutputOpen(true); void handleRunAction("run"); } },
+    { id: "run-tests", label: "Run tests", run: () => { setWorkspacePanelTab("tests"); setIsOutputOpen(true); void handleRunAction("tests"); } },
+    { id: "typecheck", label: "Run TypeScript check", run: () => { setWorkspacePanelTab("output"); setIsOutputOpen(true); void handleRunAction("typecheck"); } },
+    { id: "lint", label: "Run ESLint", run: () => { setWorkspacePanelTab("output"); setIsOutputOpen(true); void handleRunAction("lint"); } },
+    { id: "git-status", label: "Open Git status", run: () => selectActivity("source-control") },
+    { id: "ask-ai", label: "Ask AI about this file", run: () => { setAIAction("custom"); setActivePanel("ai"); } },
+    { id: "review-code", label: "Review current file with AI", run: () => { setAIAction("review"); setActivePanel("ai"); } }
+  ];
 
   return (
     <main className="theme-page-room flex h-[100dvh] w-screen max-w-[100vw] flex-col overflow-hidden">
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+      <CommandPalette open={commandPaletteOpen} commands={workspaceCommands} onClose={() => setCommandPaletteOpen(false)} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} themeId={themeId} onSelectTheme={setThemeId} />
       {resetConfirmOpen ? <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-4" role="dialog" aria-modal="true" aria-labelledby="reset-code-title"><div className="theme-panel-solid w-full max-w-sm rounded-2xl border p-5 shadow-2xl"><h2 id="reset-code-title" className="font-display text-base font-semibold text-[var(--text-primary)]">Reset shared code?</h2><p className="mt-2 text-sm leading-5 text-[var(--text-muted)]">Your current edits will be replaced with the {room.language} starter template for everyone in this room.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setResetConfirmOpen(false)} className="theme-button-neutral rounded-lg border px-3 py-2 text-xs">Cancel</button><button type="button" onClick={confirmRestartRoom} className="theme-button-primary rounded-lg px-3 py-2 text-xs">Reset code</button></div></div></div> : null}
 
@@ -489,13 +584,14 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
         <aside className="theme-panel-solid hidden w-[72px] shrink-0 flex-col items-center gap-2 border-r border-[var(--border)] py-3 lg:flex" aria-label="Activity bar">
           {[
             ["explorer", FolderTree, "Explorer"],
+            ["search", Search, "Search"],
             ["source-control", GitBranch, "Source control"],
             ["ai", Bot, "AI Assistant"],
             ["run", TerminalSquare, "Run & Debug"],
             ["deploy", Cloud, "Deploy"],
             ["settings", Settings, "Settings"]
           ].map(([id, Icon, label]) => (
-            <button key={id as string} type="button" onClick={() => selectActivity(id as "explorer" | "source-control" | "ai" | "run" | "deploy" | "settings")} title={label as string} aria-label={label as string} className={`flex w-14 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition ${activity === id ? "bg-[var(--badge-bg)] text-[var(--accent)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"}`}>
+            <button key={id as string} type="button" onClick={() => selectActivity(id as "explorer" | "search" | "source-control" | "ai" | "run" | "deploy" | "settings")} title={label as string} aria-label={label as string} className={`flex w-14 flex-col items-center gap-1 rounded-lg px-1 py-2 text-[10px] transition ${activity === id ? "bg-[var(--badge-bg)] text-[var(--accent)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"}`}>
               <Icon className="h-5 w-5" />
               <span className="truncate">{label as string}</span>
             </button>
@@ -503,17 +599,18 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
         </aside>
 
         <aside className="hidden w-[280px] shrink-0 overflow-hidden lg:block">
-          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => setActivePanel("chat")} onOpenActivity={() => setActivePanel("activity")} onRefreshGit={refreshGit} />
+          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : "explorer"} onOpenMessages={() => setActivePanel("chat")} onOpenActivity={() => setActivePanel("activity")} onOpenFile={openWorkspaceFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} />
         </aside>
 
         <nav className="theme-panel-solid flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-2 py-1 lg:hidden" aria-label="Mobile workspace navigation">
           <button type="button" onClick={() => selectActivity("explorer")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "explorer" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Explorer</button>
+          <button type="button" onClick={() => selectActivity("search")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "search" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Search</button>
           <button type="button" onClick={() => selectActivity("source-control")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "source-control" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Source control</button>
           <button type="button" onClick={() => selectActivity("ai")} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">AI</button>
           <button type="button" onClick={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
         </nav>
 
-        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : "explorer"} onOpenMessages={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} onOpenActivity={() => { setMobileWorkspaceOpen(false); setActivePanel("activity"); }} onRefreshGit={refreshGit} /></div></div> : null}
+        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : "explorer"} onOpenMessages={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} onOpenActivity={() => { setMobileWorkspaceOpen(false); setActivePanel("activity"); }} onOpenFile={openWorkspaceFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} /></div></div> : null}
 
         <section className="min-h-0 min-w-0 flex flex-1 flex-col p-2 sm:p-3">
           <div className="theme-panel-solid flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-[var(--shadow-soft)]">
@@ -536,7 +633,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             onEditorAIReady={(actions) => { editorAIActionsRef.current = actions; }}
             /></div>
           </div>
-          <WorkspaceOutputPanel open={isOutputOpen} onToggle={() => setIsOutputOpen((open) => !open)} activeFileName={room.workspace.files[room.workspace.activeFileId]?.name ?? "Untitled"} code={room.workspace.files[room.workspace.activeFileId]?.content ?? room.code} language={room.workspace.files[room.workspace.activeFileId]?.language ?? room.language} activeTab={workspacePanelTab} onActiveTabChange={(tab) => { setWorkspacePanelTab(tab); setIsOutputOpen(true); }} onChangeLanguage={changeLanguage} onRun={handleRunExternal} onCopy={handleCopyCode} onDownload={handleDownloadFile} />
+          <WorkspaceOutputPanel open={isOutputOpen} onToggle={() => setIsOutputOpen((open) => !open)} activeFileName={room.workspace.files[room.workspace.activeFileId]?.name ?? "Untitled"} code={room.workspace.files[room.workspace.activeFileId]?.content ?? room.code} language={room.workspace.files[room.workspace.activeFileId]?.language ?? room.language} activeTab={workspacePanelTab} onActiveTabChange={(tab) => { setWorkspacePanelTab(tab); setIsOutputOpen(true); }} onChangeLanguage={changeLanguage} onRunExternal={handleRunExternal} onRunAction={handleRunAction} onCancelExecution={handleCancelExecution} executions={executionRecords} capabilities={executionCapabilities} executionError={executionError} diagnostics={diagnostics} onOpenDiagnostic={openDiagnostic} onDebugDiagnostic={debugDiagnostic} onCopy={handleCopyCode} onDownload={handleDownloadFile} />
         </section>
 
         <div

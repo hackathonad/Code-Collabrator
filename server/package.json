@@ -11,7 +11,7 @@
     "test:ai": "npm run build && node --test test/aiFoundation.test.cjs",
     "test:agent": "npm run build && node --test test/agentFoundation.test.cjs test/agentCollaboration.test.cjs test/agentIntelligence.test.cjs test/agentHardening.test.cjs",
     "test:collaboration": "npm run build && node --test test/collaborationIntegration.test.cjs",
-    "test": "npm run build && node --test test/agentFoundation.test.cjs test/agentCollaboration.test.cjs test/agentIntelligence.test.cjs test/agentHardening.test.cjs test/aiFoundation.test.cjs test/analyticsFoundation.test.cjs test/collaborationIntegration.test.cjs test/githubWorkflow.test.cjs test/mediaFoundation.test.cjs test/persistenceFoundation.test.cjs test/productionFoundation.test.cjs test/productionSmoke.test.cjs",
+    "test": "npm run build && node --test test/agentFoundation.test.cjs test/agentCollaboration.test.cjs test/agentIntelligence.test.cjs test/agentHardening.test.cjs test/aiFoundation.test.cjs test/analyticsFoundation.test.cjs test/collaborationIntegration.test.cjs test/executionWorkflow.test.cjs test/githubWorkflow.test.cjs test/mediaFoundation.test.cjs test/persistenceFoundation.test.cjs test/productionFoundation.test.cjs test/productionSmoke.test.cjs",
     "test:media": "npm run build && node --test test/mediaFoundation.test.cjs"
   },
   "dependencies": {

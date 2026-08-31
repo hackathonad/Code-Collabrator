@@ -25,6 +25,7 @@ Vercel serves the frontend build and rewrites SPA routes to `index.html`. It is 
 - Optional AI: Ollama, Gemini, Groq, OpenRouter, OpenAI, Anthropic
 - Optional media: LiveKit
 - Optional GitHub project workflow: server-side GitHub API adapter with bounded virtual-workspace import
+- Bounded IDE workspace: Explorer/Search, command palette, Problems, Tests, safe validation output, and collaborator-aware execution state
 
 ## Project structure
 
@@ -173,7 +174,11 @@ Tasks and proposals are room-scoped realtime state. Authorized collaborators rec
 
 ## Code execution workflow
 
-The current application does not execute user code inside the browser or backend. `Run` copies the active file and opens the configured Programiz runner for JavaScript, Python, or C++; the browser cannot read that external site's stdout, stderr, timing, or exit code. The workspace therefore never fabricates a success result. Use `Copy code` or `Download file` when you want a portable source artifact, and run it in the opened runner. Downloaded files preserve a compatible existing extension or use `.js`, `.py`, or `.cpp` for the selected language. Reset restores the single authoritative language starter template and asks the owner before changing shared code through the existing room flow.
+The workspace has two honest execution paths. `Run project` for virtual room source opens the language-matched external Programiz runner, with Copy and Download actions; the browser cannot read that external site's stdout, stderr, timing, or exit code, so the UI never fabricates a result. Separately, the server offers bounded fixed validation actions for the configured Code Collaborator project: tests, a safe existing server test target, build, TypeScript, ESLint, and diagnostics. These actions use `shell: false`, sanitized child environments, fixed commands, room authorization, cancellation, a 30–90 second bounded timeout, bounded output, and a 40-entry history. They do not execute arbitrary room code or accept command/path strings. Results are streamed over the existing Socket.IO room channel and are visible in the Terminal, Tests, Problems, and Output tabs.
+
+## IDE workspace workflow
+
+The room page keeps the top toolbar compact and places development controls in the activity bar and lower workspace panel. Explorer supports bounded shared file operations and protected-name checks; Search supports filename/content search across at most 500 indexed files and 20 results; the command palette exposes keyboard-friendly file, AI, Git, terminal, test, TypeScript, and lint actions; Problems can reveal a Monaco diagnostic and send it to Debug mode; and Source control can open the actual bounded Git diff for an AI review. Shared execution state, task history, and room/workspace authorization are restored on reconnect without duplicate events. Collaborator edits advance the authoritative version, so agent patches and Git synchronization must report conflicts instead of overwriting newer work.
 
 ## Documentation
 

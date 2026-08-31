@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Copy, FileCode2, FileText, Folder, FolderInput, FolderOpen, FolderPlus, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Trash2, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, FileCode2, FileText, Folder, FolderInput, FolderOpen, FolderPlus, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, Trash2, Users } from "lucide-react";
 import { useMemo, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import type { UserSession, WorkspaceFile, WorkspaceFolder, WorkspaceOperation, WorkspaceState } from "../../types/collaboration";
@@ -15,19 +15,24 @@ interface WorkspaceExplorerProps {
   gitLoading?: boolean;
   gitError?: string | null;
   gitStatusByFileId?: Partial<Record<string, GitFileStatus>>;
-  mode?: "explorer" | "source-control";
+  mode?: "explorer" | "search" | "source-control";
   onOpenMessages?: () => void;
   onOpenActivity?: () => void;
+  onOpenFile?: (fileId: string) => void;
   onRefreshGit?: () => Promise<void>;
+  onReviewDiff?: () => void;
 }
 
 const byName = <T extends { name: string }>(left: T, right: T) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 const operationId = () => crypto.randomUUID();
 
-export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenMessages, onOpenActivity, onRefreshGit }: WorkspaceExplorerProps) => {
+export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenMessages, onOpenActivity, onOpenFile, onRefreshGit, onReviewDiff }: WorkspaceExplorerProps) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [clipboardFileId, setClipboardFileId] = useState<string | null>(null);
   const [fileQuery, setFileQuery] = useState("");
+  const [searchType, setSearchType] = useState<"files" | "content">("files");
+  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [fileType, setFileType] = useState("all");
   const foldersByParent = useMemo(() => {
     const index = new Map<string, WorkspaceFolder[]>();
     Object.values(workspace.folders).forEach((folder) => {
@@ -43,6 +48,21 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
     index.forEach((items) => items.sort(byName));
     return index;
   }, [workspace.files]);
+  const contentResults = useMemo(() => {
+    const query = fileQuery.trim();
+    if (mode !== "search" || !query) return [] as Array<{ file: WorkspaceFile; line: number; text: string }>;
+    const normalizedQuery = caseSensitive ? query : query.toLocaleLowerCase();
+    const files = Object.values(workspace.files).slice(0, 500).filter((file) => fileType === "all" || file.extension === fileType);
+    const results: Array<{ file: WorkspaceFile; line: number; text: string }> = [];
+    for (const file of files) {
+      file.content.split("\n").forEach((text, index) => {
+        const haystack = caseSensitive ? text : text.toLocaleLowerCase();
+        if (haystack.includes(normalizedQuery) && results.length < 20) results.push({ file, line: index + 1, text: text.trim().slice(0, 180) });
+      });
+      if (results.length >= 20) break;
+    }
+    return results;
+  }, [caseSensitive, fileQuery, fileType, mode, workspace.files]);
 
   const emit = (operation: Omit<WorkspaceOperation, "id">) => socketRef.current?.emit("workspace:operation", { roomId, userId: session.userId, operation: { ...operation, id: operationId() } });
   const askName = (label: string) => window.prompt(label)?.trim();
@@ -127,8 +147,13 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
   const restore = workspace.trash.find((entry) => entry.kind === "file");
   if (mode === "source-control") return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
     <div className="flex items-center justify-between gap-2 px-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Workspace</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">Source control</h2></div><button type="button" onClick={refreshWorkspace} title="Refresh workspace status" className="rounded p-1.5 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"><RefreshCw className="h-4 w-4" /></button></div>
-    <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel roomId={roomId} session={session} repository={repository} loading={gitLoading} error={gitError} onRefresh={onRefreshGit ?? (async () => undefined)} onNotify={onNotify} /></div>
+    <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel roomId={roomId} session={session} repository={repository} loading={gitLoading} error={gitError} onRefresh={onRefreshGit ?? (async () => undefined)} onNotify={onNotify} onReviewDiff={onReviewDiff} /></div>
     <div className="mx-3 mt-3 flex items-center justify-between gap-2 border-t border-[var(--border)] pt-3"><span className="truncate font-mono text-[10px] text-[var(--text-faint)]">{roomId}</span><button type="button" onClick={() => void copyRoomId()} className="rounded p-1 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]" title="Copy room ID"><Copy className="h-3.5 w-3.5" /></button></div>
+  </div>;
+  if (mode === "search") return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
+    <div className="flex items-center justify-between gap-2 px-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Workspace</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">Search</h2></div><Search className="h-4 w-4 text-[var(--accent)]" /></div>
+    <div className="grid gap-2 px-3 pt-3"><div className="flex gap-1"><select value={searchType} onChange={(event) => setSearchType(event.target.value as "files" | "content")} className="theme-input rounded border px-2 py-1.5 text-[11px]"><option value="files">File names</option><option value="content">File contents</option></select><select value={fileType} onChange={(event) => setFileType(event.target.value)} className="theme-input min-w-0 flex-1 rounded border px-2 py-1.5 text-[11px]"><option value="all">All types</option>{[...new Set(Object.values(workspace.files).map((file) => file.extension).filter(Boolean))].slice(0, 20).map((extension) => <option key={extension} value={extension}>.{extension}</option>)}</select></div><input autoFocus value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder={searchType === "content" ? "Search in project…" : "Search file names…"} aria-label="Search project" className="theme-input w-full rounded border px-2 py-1.5 text-xs outline-none" /><label className="flex items-center gap-2 text-[11px] text-[var(--text-muted)]"><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} /> Case sensitive</label></div>
+    <div className="mt-3 min-h-0 flex-1 overflow-auto px-2">{searchType === "content" ? contentResults.map((result) => <button key={`${result.file.id}-${result.line}`} type="button" onClick={() => onOpenFile?.(result.file.id)} className="mb-1 w-full rounded-md border border-transparent px-2 py-2 text-left hover:border-[var(--border)] hover:bg-[var(--badge-bg)]"><span className="block truncate text-[11px] text-[var(--text-secondary)]">{result.file.name}:{result.line}</span><span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">{result.text || "(blank line)"}</span></button>) : Object.values(workspace.files).slice(0, 500).filter((file) => { const query = caseSensitive ? fileQuery.trim() : fileQuery.trim().toLocaleLowerCase(); const name = caseSensitive ? file.name : file.name.toLocaleLowerCase(); return (!query || name.includes(query)) && (fileType === "all" || file.extension === fileType); }).slice(0, 20).map((file) => <button key={file.id} type="button" onClick={() => onOpenFile?.(file.id)} className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[11px] text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><FileCode2 className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" /><span className="min-w-0 truncate">{file.name}</span><span className="ml-auto text-[10px] text-[var(--text-faint)]">{file.extension ? `.${file.extension}` : "file"}</span></button>)}{fileQuery.trim() && searchType === "content" && !contentResults.length ? <p className="px-2 py-4 text-[11px] text-[var(--text-faint)]">No content matches in the bounded workspace search.</p> : null}</div>
   </div>;
   return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
     <div className="flex items-center justify-between gap-2 px-3">

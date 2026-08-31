@@ -3,9 +3,10 @@ import type { GitBranchSummary, GitDiffFile, GitHubConnectionStatus, GitHubRepos
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
 import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
+import type { ExecutionAction, ExecutionCapabilities, ExecutionRecord } from "../types/execution";
 import { storage } from "./storage";
 
-const API_URL = import.meta.env.VITE_API_URL?.replace(/\/+$/, "") ?? "";
+const API_URL = import.meta.env?.VITE_API_URL?.replace(/\/+$/, "") ?? "";
 
 export class ApiNetworkError extends Error {
   constructor(message = "Cannot reach the Code Collaborator server. Make sure the backend is running and try again.") {
@@ -23,7 +24,7 @@ export class ApiRequestError extends Error {
 
 const isVercelWithoutBackend = () => !API_URL
   && typeof window !== "undefined"
-  && (window.location.hostname.endsWith(".vercel.app") || import.meta.env.PROD);
+  && (window.location.hostname.endsWith(".vercel.app") || Boolean(import.meta.env?.PROD));
 
 const buildApiUrl = (path: string) => {
   if (API_URL) {
@@ -282,6 +283,31 @@ export const api = {
     const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
     const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/pull-requests?${query.toString()}`));
     return (await readJson<{ ok: true; pullRequests: Array<{ number: number; url: string; title: string; state: string; head: string; base: string }> }>(response)).pullRequests;
+  },
+
+  async getExecutionCapabilities(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/execution/capabilities${roomSessionQuery(session)}`));
+    return (await readJson<{ ok: true; capabilities: ExecutionCapabilities }>(response)).capabilities;
+  },
+
+  async getExecutionHistory(roomId: string, session: UserSession) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/execution/history${roomSessionQuery(session)}`));
+    return (await readJson<{ ok: true; executions: ExecutionRecord[] }>(response)).executions;
+  },
+
+  async startExecution(roomId: string, session: UserSession, input: { action: ExecutionAction; target?: string; requestId?: string }) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/execution`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ ...input, guestToken: session.guestToken }) });
+    return (await readJson<{ ok: true; execution: ExecutionRecord }>(response)).execution;
+  },
+
+  async getExecution(roomId: string, session: UserSession, executionId: string) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/execution/${encodeURIComponent(executionId)}${roomSessionQuery(session)}`));
+    return (await readJson<{ ok: true; execution: ExecutionRecord }>(response)).execution;
+  },
+
+  async cancelExecution(roomId: string, session: UserSession, executionId: string) {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/execution/${encodeURIComponent(executionId)}/cancel`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken: session.guestToken }) });
+    return (await readJson<{ ok: true; execution: ExecutionRecord }>(response)).execution;
   },
 
   async getAIProviders() {

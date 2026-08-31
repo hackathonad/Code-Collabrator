@@ -93,14 +93,11 @@ export const RoomToolbar = ({
       </div>
 
       <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 sm:gap-2">
-        <ToolbarButton label="Invite" accent className="theme-workspace-action" icon={<Link2 />} onClick={onCopyRoomLink} />
-        <ToolbarButton label="Run" accent className="theme-workspace-action" icon={<Zap />} onClick={onRun} />
-        <ToolbarButton label="Reset code" icon={<RotateCcw />} onClick={onRestart} disabled={!isOwner} title={!isOwner ? "Only the room owner can reset code" : "Restore the selected language boilerplate"} />
         <MediaCallButton roomId={roomId} session={session} onOpenPanel={onOpenMedia} />
         <ToolbarButton label={chatOpen ? "Hide chat" : "Chat"} icon={<MessageSquare />} onClick={onToggleChat} accent={chatOpen} />
       </div>
 
-      <div className="hidden shrink-0 items-center gap-1 xl:flex">
+      <div className="hidden">
         <ToolbarButton label="Copy code" icon={<ClipboardCopy />} onClick={onCopyCode} />
         <ToolbarButton
           label={isPaused ? "Resume" : "Pause"}
@@ -121,7 +118,7 @@ export const RoomToolbar = ({
       </div>
       <button
         type="button"
-        className="ui-focus-ring inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] px-2 text-[var(--text-muted)] xl:hidden"
+        className="ui-focus-ring inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] px-2 text-[var(--text-muted)]"
         aria-label="More room controls"
         aria-expanded={secondaryOpen}
         title="More room controls"
@@ -135,7 +132,10 @@ export const RoomToolbar = ({
         <span className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--badge-bg)] text-[10px] font-semibold text-[var(--text-primary)]" title={session.username}>{session.username.slice(0, 2).toUpperCase()}</span>
       </div>
       {secondaryOpen ? (
-        <div className="absolute right-3 top-[calc(100%-0.25rem)] z-50 flex min-w-48 flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface-bg)] p-2 shadow-xl xl:hidden">
+        <div className="absolute right-3 top-[calc(100%-0.25rem)] z-50 flex min-w-48 max-w-[calc(100vw-1.5rem)] flex-col gap-1 rounded-xl border border-[var(--border)] bg-[var(--surface-bg)] p-2 shadow-xl">
+          <ToolbarButton label="Invite" accent icon={<Link2 />} onClick={() => { onCopyRoomLink(); setSecondaryOpen(false); }} />
+          <ToolbarButton label="Run & debug" accent icon={<Zap />} onClick={() => { onRun(); setSecondaryOpen(false); }} />
+          <ToolbarButton label="Reset code" icon={<RotateCcw />} onClick={() => { onRestart(); setSecondaryOpen(false); }} disabled={!isOwner} title={!isOwner ? "Only the room owner can reset code" : "Restore the selected language boilerplate"} />
           <ToolbarButton label="Copy code" icon={<ClipboardCopy />} onClick={() => { onCopyCode(); setSecondaryOpen(false); }} />
           <ToolbarButton label={isPaused ? "Resume" : "Pause"} icon={isPaused ? <Play /> : <Pause />} onClick={() => { onPauseToggle(); setSecondaryOpen(false); }} disabled={!isOwner} />
           <ToolbarButton label={`Theme: ${THEME_LABELS[themeId]}`} icon={<Palette />} onClick={() => { handlePaletteClick(); setSecondaryOpen(false); }} />

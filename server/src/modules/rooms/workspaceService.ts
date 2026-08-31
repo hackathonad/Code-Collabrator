@@ -14,9 +14,13 @@ const languageByExtension: Record<string, SupportedLanguage> = {
   py: "python", pyw: "python", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", h: "cpp"
 };
 
+/** Workspace paths are virtual, but secret-like and VCS control files are
+ * still excluded so they cannot be imported, created, or staged by accident. */
+export const isProtectedWorkspacePath = (value: string) => /(^|\/)(?:\.env(?:\..*)?|\.git(?:\/|$)|id_rsa(?:\..*)?|.*(?:secret|password|credential|token).*|.*\.pem)$/i.test(value.replaceAll("\\", "/"));
+
 const cleanName = (value: string | undefined) => {
   const name = typeof value === "string" ? value.trim() : "";
-  if (!name || name.length > MAX_NAME_LENGTH || name === "." || name === ".." || /[\\/:*?"<>|\u0000-\u001f]/.test(name)) {
+  if (!name || name.length > MAX_NAME_LENGTH || name === "." || name === ".." || isProtectedWorkspacePath(name) || /[\\/:*?"<>|\u0000-\u001f]/.test(name)) {
     throw new Error("Use a valid file or folder name");
   }
   return name;
@@ -151,6 +155,7 @@ export const createWorkspaceFromProjectFiles = (
     if (typeof entry.path !== "string" || !entry.path || entry.path.length > 300 || entry.path.startsWith("/") || entry.path.includes("\\")) throw new Error("Repository contains an unsafe file path");
     const segments = entry.path.split("/");
     if (segments.some((segment) => !segment || segment === "." || segment === "..")) throw new Error("Repository contains an unsafe file path");
+    if (isProtectedWorkspacePath(entry.path)) throw new Error("Repository contains a protected file path");
     if (uniquePaths.has(entry.path)) throw new Error("Repository contains duplicate file paths");
     uniquePaths.add(entry.path);
     if (typeof entry.content !== "string") throw new Error("Repository file content is invalid");

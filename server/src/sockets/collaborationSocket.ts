@@ -6,6 +6,8 @@ import { roomPersistence } from "../services/roomPersistence";
 import { getPublicAgentProposalHistory, getPublicAgentProposalState, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
 import { subscribeGitState } from "../modules/git/gitEvents";
+import { executionService } from "../modules/execution/executionService";
+import { subscribeExecution } from "../modules/execution/executionEvents";
 import { projectService } from "../modules/git/projectService";
 import {
   isEditableRole,
@@ -98,6 +100,7 @@ export const clearCollaborationRuntime = async () => {
   rateLimitWindows.clear();
   for (const unsubscribe of agentSocketSubscriptions) unsubscribe();
   agentSocketSubscriptions.clear();
+  executionService.shutdown();
   socketRoomBindings.clear();
   await Promise.all(pendingSnapshots.map((snapshot) => roomPersistence.saveRoom(snapshot)));
   await roomPersistence.flush();
@@ -307,6 +310,10 @@ export const registerCollaborationSocket = (io: Server) => {
     io.to(event.roomId).emit("git:state", event);
   });
   agentSocketSubscriptions.add(unsubscribeGitState);
+  const unsubscribeExecution = subscribeExecution((event) => {
+    io.to(event.record.roomId).emit("execution:state", event);
+  });
+  agentSocketSubscriptions.add(unsubscribeExecution);
 
 
   const checkRateLimit = (socket: Socket) => {
@@ -526,6 +533,7 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId));
         socket.emit("agent:proposal_history", getPublicAgentProposalHistory(payload.roomId));
         socket.emit("agent:proposal_state", getPublicAgentProposalState(payload.roomId));
+        socket.emit("execution:history", executionService.list(payload.roomId, snapshot.workspace.id));
         const gitSummary = projectService.getSummary(snapshot.workspace);
         if (gitSummary) socket.emit("git:state", { roomId: payload.roomId, workspace: snapshot.workspace, summary: { ...gitSummary, diff: undefined }, version: snapshot.version, code: snapshot.code, language: snapshot.language, history: snapshot.history, operation: "status" });
         io.to(payload.roomId).emit("room:participants", snapshot.participants);
