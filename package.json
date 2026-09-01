@@ -16,7 +16,7 @@
     "lint": "eslint client/src server/src",
     "test": "npm run test --workspace server && npm run test:client",
     "verify": "npm run build && npm run lint && npm test",
-    "test:client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts ../client/test/executionFoundation.test.ts ../client/test/persistenceFoundation.test.ts",
+    "test:client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts ../client/test/executionFoundation.test.ts ../client/test/persistenceFoundation.test.ts ../client/test/agentProtocol.test.ts",
     "test:media-client": "npm exec --workspace server tsx -- --test ../client/test/mediaFoundation.test.ts"
   },
   "devDependencies": {

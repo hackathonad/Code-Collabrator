@@ -53,8 +53,11 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     try {
       const providers = await api.getAIProviders(); const current = get().settings;
       const selected = providers.find((provider) => provider.id === current.provider);
-      const settings = selected?.available && !selected.models.some((model) => model.id === current.model)
-        ? { ...current, model: selected.defaultModel ?? selected.models[0]?.id ?? "" }
+      const selectedModel = selected?.models.some((model) => model.id === current.model)
+        ? current.model
+        : selected?.defaultModel ?? selected?.models[0]?.id ?? current.model;
+      const settings = selected
+        ? { ...current, model: selectedModel }
         : current;
       set({ providers, settings, loadingProviders: false }); savePersisted(get().conversations, settings);
     } catch { set({ loadingProviders: false, error: "Cannot reach the Code Collaborator server. AI providers could not be loaded." }); }

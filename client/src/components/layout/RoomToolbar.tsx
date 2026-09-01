@@ -93,7 +93,7 @@ export const RoomToolbar = ({
       </div>
 
       <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1 sm:gap-2">
-        <MediaCallButton roomId={roomId} session={session} onOpenPanel={onOpenMedia} />
+        <MediaCallButton onOpenPanel={onOpenMedia} />
         <ToolbarButton label={chatOpen ? "Hide chat" : "Chat"} icon={<MessageSquare />} onClick={onToggleChat} accent={chatOpen} />
       </div>
 

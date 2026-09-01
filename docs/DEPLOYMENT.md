@@ -134,3 +134,11 @@ After any source or Vercel-variable change, trigger a new **Production** deploym
 | Vercel SPA 404 | Confirm the Vercel project uses the committed SPA rewrite and the correct client output directory. |
 | Stale Vercel UI | Confirm the project root is `.` (or consistently `client/`), redeploy Production from the current commit, and verify the generated asset no longer contains obsolete auth routes. |
 | Render startup failure | Check the Docker build/start logs, keep `NODE_ENV=production`, provide a valid guest-session secret, and allow Render to supply `PORT`. |
+
+## Product-quality verification notes
+
+The deployed experience is still guest-first: visitors choose a display name, create or join a room, and use the workspace without login or browser authentication. The AI assistant uses the same Render backend as the normal AI routes. Configure at least one server-side provider/model before testing AI; an unavailable provider is shown as unavailable and is not silently replaced.
+
+For an agent smoke test, ask for an explanation first, then request an edit and confirm that a proposal appears with files, line counts, review findings, and explicit Apply/Reject controls. Change the file from another collaborator before applying and verify that the proposal says the files changed while the AI was working and offers Regenerate/Review current file. If a provider returns malformed structured JSON, the backend retries once and then returns a safe `INVALID_MODEL_OUTPUT` result without executing a tool or changing the workspace. Streaming events are also validated by the client.
+
+Image attachments currently provide a local preview and filename only because no shipped provider advertises vision support. `Run project` remains an external-runner/export flow; Code Collaborator cannot observe that runner's output cross-origin. Automatic Vercel/Render deployment is not performed by the workspace Deploy panel. These limitations should be reported during production QA rather than represented as successful provider or deployment results.

@@ -129,8 +129,9 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
             <div ref={endRef} />
           </div>
         ) : (
-          <div className="flex h-full min-h-[120px] items-center justify-center text-center text-xs text-[var(--text-muted)]">
-            Messages appear here in real time.
+          <div className="flex h-full min-h-[120px] flex-col items-center justify-center px-4 text-center text-xs text-[var(--text-muted)]">
+            <p className="font-medium text-[var(--text-secondary)]">No messages yet</p>
+            <p className="mt-1">Start the room conversation below. New messages appear here in real time.</p>
           </div>
         )}
       </div>

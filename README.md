@@ -194,3 +194,11 @@ The room page keeps the top toolbar compact and places development controls in t
 - `/health` reports that the backend process is alive. `/ready` reports safe feature availability plus optional persistence configuration/schema health without returning secret values.
 - Guest-session signatures are tied to `GUEST_SESSION_SECRET`; changing that server secret invalidates existing guest sessions.
 - Room authorization remains server-side even though identity is guest-first: signed room tokens, membership checks, socket binding, owner checks, rate limits, and payload validation are still enforced.
+
+## Improvement Batch 1 workflow notes
+
+The room UI keeps the top toolbar focused on project/room state and communication. Explorer, Search, Source Control, AI, Run & Debug, and the lower output views remain contextual workspace tools. The AI opens as a chat-first assistant with a small set of workflow starters; it can inspect the current file, diagnostics, bounded project context, and user-provided text attachments. Image attachments are shown for reference, but are preview-only until a configured provider advertises vision support.
+
+Agent work is presented as human-readable progress: understanding context, inspecting relevant files, preparing a proposal, waiting for approval, and validating. Technical activity is available in an expandable detail section. Edit, Debug, refactor, test, and review flows never silently write files. A proposal shows affected files and line changes, then requires an explicit Apply or Reject action. If a collaborator changes a file first, the proposal becomes stale and offers Regenerate or Review current file without overwriting anyone's work.
+
+Provider output is untrusted structured data. The server validates action, tool, patch, plan, diagnosis, and review schemas; deterministic JSON extraction is allowed only when safe. Malformed output is retried once with a stronger format instruction and then becomes a clear failure with no tool call or file change. Streaming agent events are validated again in the browser. Provider credentials remain on the backend, the selected provider is never silently changed, and the database-only guest architecture remains unchanged.

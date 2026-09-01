@@ -1,8 +1,9 @@
-import { ChevronDown, ChevronRight, Copy, FileCode2, FileText, Folder, FolderInput, FolderOpen, FolderPlus, MessageSquare, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, Trash2, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, FileCode2, FileText, Folder, FolderInput, FolderOpen, FolderPlus, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Search, Trash2 } from "lucide-react";
 import { useMemo, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import type { UserSession, WorkspaceFile, WorkspaceFolder, WorkspaceOperation, WorkspaceState } from "../../types/collaboration";
 import type { GitFileStatus, RepositorySummary } from "../../types/git";
+import { DeployPanel } from "./DeployPanel";
 import { SourceControlPanel } from "./SourceControlPanel";
 
 interface WorkspaceExplorerProps {
@@ -15,10 +16,10 @@ interface WorkspaceExplorerProps {
   gitLoading?: boolean;
   gitError?: string | null;
   gitStatusByFileId?: Partial<Record<string, GitFileStatus>>;
-  mode?: "explorer" | "search" | "source-control";
-  onOpenMessages?: () => void;
-  onOpenActivity?: () => void;
+  mode?: "explorer" | "search" | "source-control" | "deploy";
   onOpenFile?: (fileId: string) => void;
+  onCopyRoomLink?: () => void;
+  onDownloadFile?: () => void;
   onRefreshGit?: () => Promise<void>;
   onReviewDiff?: () => void;
 }
@@ -26,7 +27,7 @@ interface WorkspaceExplorerProps {
 const byName = <T extends { name: string }>(left: T, right: T) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 const operationId = () => crypto.randomUUID();
 
-export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenMessages, onOpenActivity, onOpenFile, onRefreshGit, onReviewDiff }: WorkspaceExplorerProps) => {
+export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenFile, onCopyRoomLink, onDownloadFile, onRefreshGit, onReviewDiff }: WorkspaceExplorerProps) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [clipboardFileId, setClipboardFileId] = useState<string | null>(null);
   const [fileQuery, setFileQuery] = useState("");
@@ -145,6 +146,7 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
   };
 
   const restore = workspace.trash.find((entry) => entry.kind === "file");
+  if (mode === "deploy") return <DeployPanel onCopyRoomLink={onCopyRoomLink ?? (() => onNotify("Copy the workspace invite from the room toolbar."))} onDownloadFile={onDownloadFile ?? (() => onNotify("Download the current source from the room toolbar."))} />;
   if (mode === "source-control") return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
     <div className="flex items-center justify-between gap-2 px-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Workspace</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">Source control</h2></div><button type="button" onClick={refreshWorkspace} title="Refresh workspace status" className="rounded p-1.5 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"><RefreshCw className="h-4 w-4" /></button></div>
     <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel roomId={roomId} session={session} repository={repository} loading={gitLoading} error={gitError} onRefresh={onRefreshGit ?? (async () => undefined)} onNotify={onNotify} onReviewDiff={onReviewDiff} /></div>
@@ -165,8 +167,6 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
     <div className="mx-3 mt-3"><input value={fileQuery} onChange={(event) => setFileQuery(event.target.value)} placeholder="Search files" aria-label="Search workspace files" className="theme-input w-full rounded border px-2 py-1.5 text-xs outline-none" /></div>
     <div className="mt-3 min-h-0 flex-1 overflow-auto px-2">{renderFolder(workspace.folders[workspace.rootFolderId], 0)}</div>
     <div className="mx-3 mt-3 border-t border-[var(--border)] pt-3">
-      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Room</p>
-      <div className="mt-2 grid gap-1">{onOpenMessages ? <button type="button" onClick={onOpenMessages} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><MessageSquare className="h-3.5 w-3.5 text-[var(--accent)]" />Messages</button> : null}{onOpenActivity ? <button type="button" onClick={onOpenActivity} className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><Users className="h-3.5 w-3.5 text-[var(--accent)]" />Participants & activity</button> : null}</div>
       <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-[var(--border)] bg-[var(--badge-bg)] px-2 py-1.5"><span className="truncate font-mono text-[10px] text-[var(--text-muted)]">Room ID: {roomId}</span><button type="button" onClick={() => void copyRoomId()} className="rounded p-0.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]" title="Copy room ID"><Copy className="h-3.5 w-3.5" /></button></div>
     </div>
   </div>;

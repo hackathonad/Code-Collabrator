@@ -378,7 +378,7 @@ export const CollaborativeEditor = ({
             readOnly: !canEdit
           }}
         />
-        {hasSelection && onOpenAIAssistant ? <div className="absolute right-4 top-14 z-20 flex overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] shadow-lg"><button type="button" onClick={() => onOpenAIAssistant("custom")} className="theme-button-primary inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold"><Sparkles className="h-3.5 w-3.5" /> Ask AI</button>{(["explain", "fix", "refactor", "optimize", "document", "test"] as AIAction[]).map((action) => <button key={action} type="button" onClick={() => onOpenAIAssistant(action)} className="border-l border-[var(--border)] px-2 py-1.5 text-[10px] font-medium capitalize text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]">{action === "test" ? "Tests" : action}</button>)}</div> : null}
+        {hasSelection && onOpenAIAssistant ? <button type="button" onClick={() => onOpenAIAssistant("custom")} className="theme-button-primary absolute right-4 top-14 z-20 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-lg"><Sparkles className="h-3.5 w-3.5" /> Ask AI</button> : null}
         {isPaused ? (
           <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur-md sm:inset-x-6 sm:bottom-6 sm:text-sm">
             Editing is paused. Code is read-only until the owner resumes.

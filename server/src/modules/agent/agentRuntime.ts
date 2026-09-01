@@ -53,6 +53,12 @@ export interface ParsedAgentAction {
   hypotheses?: AgentDiagnosisHypothesis[];
 }
 
+export type AgentOutputStatus = "valid" | "repaired" | "invalid";
+
+export type ParsedAgentActionResult =
+  | { status: "valid" | "repaired"; action: ParsedAgentAction | null }
+  | { status: "invalid"; action: null; reason: string };
+
 const toolNameSet = new Set<AgentToolName>([
   "READ_FILE", "LIST_FILES", "SEARCH_CODE", "GET_CURRENT_FILE", "GET_SELECTION",
   "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_RELATED_FILES", "GET_PACKAGE_INFO", "GET_TASK_HISTORY", "GET_DIAGNOSTICS", "APPLY_PATCH", "RUN_VALIDATION"
@@ -72,35 +78,81 @@ const parseDiagnosis = (value: unknown): AgentDiagnosisHypothesis[] => !Array.is
   return [{ confidence: entry.confidence as AgentDiagnosisHypothesis["confidence"], title: entry.title.trim().slice(0, 240), explanation: entry.explanation.trim().slice(0, 1_000), evidence, ...(typeof entry.recommendation === "string" && entry.recommendation.trim() ? { recommendation: entry.recommendation.trim().slice(0, 800) } : {}) }];
 });
 
-export const parseAgentAction = (content: string): ParsedAgentAction | null => {
+const isStringArray = (value: unknown, limit: number, itemLimit: number): value is string[] => Array.isArray(value) && value.length > 0 && value.length <= limit && value.every((entry) => typeof entry === "string" && Boolean(entry.trim()) && entry.length <= itemLimit);
+const isArgumentObject = (value: unknown): value is Record<string, unknown> => isRecord(value);
+
+const validatePatchArguments = (args: Record<string, unknown>) => {
+  const rawChanges = Array.isArray(args.changes) ? args.changes : Array.isArray(args.files) ? args.files : [args];
+  if (!rawChanges.length || rawChanges.length > 10) return false;
+  return rawChanges.every((entry) => isRecord(entry)
+    && typeof entry.path === "string" && entry.path.length > 0 && entry.path.length <= 260
+    && typeof entry.expectedContent === "string" && entry.expectedContent.length > 0 && entry.expectedContent.length <= 30_000
+    && typeof entry.replacement === "string" && entry.replacement.length <= 30_000);
+};
+
+const validateToolArguments = (tool: AgentToolName, args: Record<string, unknown>) => {
+  if (["GET_CURRENT_FILE", "GET_SELECTION", "GET_WORKSPACE_SUMMARY", "GET_PROJECT_INDEX", "GET_PACKAGE_INFO", "GET_TASK_HISTORY", "GET_DIAGNOSTICS"].includes(tool)) return true;
+  if (tool === "READ_FILE") return typeof args.path === "string" && args.path.length > 0 && args.path.length <= 260;
+  if (tool === "SEARCH_CODE") return typeof args.query === "string" && args.query.trim().length > 0 && args.query.length <= 200;
+  if (tool === "GET_RELATED_FILES") return (args.fileId === undefined || typeof args.fileId === "string") && (args.path === undefined || typeof args.path === "string");
+  if (tool === "LIST_FILES") return args.path === undefined || typeof args.path === "string";
+  if (tool === "RUN_VALIDATION") return args.category === "typecheck" || args.category === "lint" || args.category === "tests" || args.category === "build";
+  if (tool === "APPLY_PATCH") return validatePatchArguments(args);
+  return false;
+};
+
+const parseStrictReviewFindings = (value: unknown) => {
+  if (!Array.isArray(value) || value.length > 30) return null;
+  if (value.some((entry) => !isRecord(entry) || typeof entry.title !== "string" || !entry.title.trim() || typeof entry.explanation !== "string" || !entry.explanation.trim() || !reviewSeverities.has(entry.severity as AgentReviewFinding["severity"]))) return null;
+  return parseReviewFindings(value);
+};
+
+const parseStrictDiagnosis = (value: unknown) => {
+  if (!Array.isArray(value) || value.length > 8) return null;
+  if (value.some((entry) => !isRecord(entry) || typeof entry.title !== "string" || !entry.title.trim() || typeof entry.explanation !== "string" || !entry.explanation.trim() || !diagnosisConfidences.has(entry.confidence as AgentDiagnosisHypothesis["confidence"]))) return null;
+  return parseDiagnosis(value);
+};
+
+export const parseAgentActionResult = (content: string): ParsedAgentActionResult => {
   const trimmed = content.trim();
-  if (!trimmed) return null;
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed)?.[1] ?? trimmed;
+  if (!trimmed) return { status: "valid", action: null };
+  const fenceMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  const fenced = fenceMatch?.[1] ?? trimmed;
   const first = fenced.indexOf("{");
   const last = fenced.lastIndexOf("}");
-  if (first < 0 || last <= first) return { type: "final", text: trimmed };
+  const looksLikeStructuredOutput = Boolean(fenceMatch) || trimmed.startsWith("{");
+  if (first < 0 || last <= first) return looksLikeStructuredOutput ? { status: "invalid", action: null, reason: "The response was expected to contain one complete JSON object." } : { status: "valid", action: { type: "final", text: trimmed } };
+  const repaired = Boolean(fenceMatch) || first > 0 || last < fenced.length - 1;
   try {
-    const value = JSON.parse(fenced.slice(first, last + 1)) as Record<string, unknown>;
-    if (value.type === "plan" && Array.isArray(value.steps)) {
-      const steps = value.steps.filter((step): step is string => typeof step === "string").map((step) => step.trim().slice(0, 240)).filter(Boolean).slice(0, 12);
-      return steps.length ? { type: "plan", steps } : { type: "final", text: trimmed };
+    const parsed = JSON.parse(fenced.slice(first, last + 1)) as unknown;
+    if (!isRecord(parsed) || typeof parsed.type !== "string") return { status: "invalid", action: null, reason: "The response did not contain a recognized agent action." };
+    const value = parsed;
+    if (value.type === "plan") {
+      if (!isStringArray(value.steps, 12, 240)) return { status: "invalid", action: null, reason: "The plan steps were missing or had invalid types." };
+      return { status: repaired ? "repaired" : "valid", action: { type: "plan", steps: value.steps.map((step) => step.trim().slice(0, 240)) } };
     }
     if (value.type === "diagnosis") {
-      const hypotheses = parseDiagnosis(value.hypotheses);
-      return hypotheses.length ? { type: "diagnosis", hypotheses } : { type: "final", text: "The agent could not establish an evidence-backed diagnosis." };
+      const hypotheses = parseStrictDiagnosis(value.hypotheses);
+      return hypotheses?.length ? { status: repaired ? "repaired" : "valid", action: { type: "diagnosis", hypotheses } } : { status: "invalid", action: null, reason: "The diagnosis did not contain valid evidence-backed hypotheses." };
     }
-    if (value.type === "tool_call" && typeof value.tool === "string" && toolNameSet.has(value.tool as AgentToolName)) {
-      return { type: "tool_call", tool: value.tool as AgentToolName, arguments: value.arguments && typeof value.arguments === "object" && !Array.isArray(value.arguments) ? value.arguments as Record<string, unknown> : {} };
+    if (value.type === "tool_call") {
+      if (typeof value.tool !== "string" || !toolNameSet.has(value.tool as AgentToolName) || !isArgumentObject(value.arguments) || !validateToolArguments(value.tool as AgentToolName, value.arguments)) return { status: "invalid", action: null, reason: "The tool call failed validation and was not executed." };
+      return { status: repaired ? "repaired" : "valid", action: { type: "tool_call", tool: value.tool as AgentToolName, arguments: value.arguments } };
     }
     if (value.type === "review") {
-      const findings = parseReviewFindings(value.findings);
-      return findings.length ? { type: "review", findings } : { type: "final", text: "No actionable findings were returned by the review." };
+      const findings = parseStrictReviewFindings(value.findings);
+      return findings ? { status: repaired ? "repaired" : "valid", action: { type: "review", findings } } : { status: "invalid", action: null, reason: "The review findings were missing or had invalid types." };
     }
-    if (value.type === "final" && typeof value.text === "string") return { type: "final", text: value.text };
+    if (value.type === "final" && typeof value.text === "string" && value.text.trim()) return { status: repaired ? "repaired" : "valid", action: { type: "final", text: value.text } };
+    return { status: "invalid", action: null, reason: "The agent action did not match a supported schema." };
   } catch {
-    return { type: "final", text: trimmed };
+    return { status: "invalid", action: null, reason: "The provider returned malformed JSON." };
   }
-  return { type: "final", text: trimmed };
+};
+
+export const parseAgentAction = (content: string): ParsedAgentAction | null => {
+  const result = parseAgentActionResult(content);
+  return result.action ?? (result.status === "invalid" ? { type: "final", text: content.trim() } : null);
 };
 
 const actionSummary = (tool: AgentToolName, args: Record<string, unknown>) => {
@@ -229,6 +281,7 @@ export const executeAgent = async (
       messages.push({ role: "user", content: "A concise safe plan was recorded before execution. Continue with verified tool calls or a final answer." });
     }
     let review: AgentReviewFinding[] | undefined;
+    let structuredOutputRetryUsed = false;
     for (let iteration = 1; iteration <= AGENT_MAX_ITERATIONS; iteration += 1) {
       iterations = iteration;
       if (controller.signal.aborted) throw new AgentRuntimeError(timedOut ? "TIMEOUT" : "CANCELLED", timedOut ? "Agent generation timed out" : "Agent generation was cancelled");
@@ -241,7 +294,20 @@ export const executeAgent = async (
       const completion = await runWithinDeadline(() => collectCompletion(service, { ...request, conversation: messages }, controller.signal));
       if (controller.signal.aborted) throw new AgentRuntimeError(timedOut ? "TIMEOUT" : "CANCELLED", timedOut ? "Agent generation timed out" : "Agent generation was cancelled");
       usage = completion.usage ?? usage;
-      const action = parseAgentAction(completion.content);
+      const parsed = parseAgentActionResult(completion.content);
+      if (parsed.status === "invalid") {
+        if (!structuredOutputRetryUsed) {
+          structuredOutputRetryUsed = true;
+          emitStatus("The provider returned an invalid structured response. Retrying safely…");
+          messages.push({ role: "user", content: `The previous response failed the agent schema: ${parsed.reason} Return exactly one valid JSON object using a documented action shape. Do not include prose, markdown, tool names outside the allowed list, or patch content outside APPLY_PATCH arguments.` });
+          continue;
+        }
+        const text = "The assistant returned an invalid structured response twice. No changes were made. Try again or choose another provider/model.";
+        emit({ type: "error", code: "INVALID_MODEL_OUTPUT", message: text });
+        emit({ type: "final", text });
+        return { ...baseResult(request, events, patches, iteration, toolCalls, "completed", usage), finalText: text };
+      }
+      const action = parsed.action;
       if (!action) {
         const text = "I could not produce a response from the selected provider.";
         emit({ type: "final", text });

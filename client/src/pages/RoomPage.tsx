@@ -1,6 +1,6 @@
 ﻿import { CircleAlert, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Cloud, FolderTree, GitBranch, Phone, Search, Settings, TerminalSquare, Users } from "lucide-react";
+import { Bot, Cloud, FolderTree, GitBranch, Search, Settings, TerminalSquare, Users } from "lucide-react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ChatPanel } from "../components/chat/ChatPanel";
 import { AIAssistantPanel } from "../components/ai/AIAssistantPanel";
@@ -31,6 +31,7 @@ import type { AgentDiagnostic, AgentPatch, ValidationCategory } from "../types/a
 import type { ExecutionAction, ExecutionRecord } from "../types/execution";
 
 type CollaborationPanel = "chat" | "ai" | "people" | "activity" | null;
+type OpenCollaborationPanel = Exclude<CollaborationPanel, null>;
 type ExecutionContext = { output: string; failed: boolean } | undefined;
 
 export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
@@ -75,13 +76,21 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const currentRoomId = room?.roomId ?? "";
   const currentWorkspaceId = room?.workspace.id ?? "";
 
+  const showPanel = (panel: OpenCollaborationPanel) => {
+    setIsMediaOpen(false);
+    setActivePanel(panel);
+  };
+
   const selectActivity = (next: "explorer" | "search" | "source-control" | "ai" | "run" | "deploy" | "settings") => {
     setActivity(next);
-    if (next === "explorer" || next === "search" || next === "source-control") setMobileWorkspaceOpen(true);
+    if (next === "explorer" || next === "search" || next === "source-control" || next === "deploy") setMobileWorkspaceOpen(true);
     else setMobileWorkspaceOpen(false);
-    if (next === "ai") setActivePanel((current) => current === "ai" ? null : "ai");
+    if (next !== "ai" && activePanel === "ai") setActivePanel(null);
+    if (next === "ai") {
+      if (activePanel === "ai") setActivePanel(null);
+      else showPanel("ai");
+    }
     if (next === "run") { setWorkspacePanelTab("run"); setIsOutputOpen(true); }
-    if (next === "deploy") pushToast("Deploy this workspace from your connected hosting provider.");
     if (next === "settings") setSettingsOpen(true);
   };
 
@@ -149,11 +158,12 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   }, [session]);
 
   const toggleChat = () => {
-    setActivePanel((current) => current === "chat" ? null : "chat");
+    if (activePanel === "chat") setActivePanel(null);
+    else showPanel("chat");
   };
 
   const openMedia = () => {
-    setActivePanel("chat");
+    setActivePanel(null);
     setIsMediaOpen(true);
   };
 
@@ -511,12 +521,12 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     openDiagnostic(diagnostic);
     setAIAction("fix");
     setAIDraft("Debug this problem and propose a safe fix.");
-    setActivePanel("ai");
+    showPanel("ai");
   };
   const reviewDiff = () => {
     setAIAction("review");
     setAIDraft("Review the actual current source-control diff in this workspace. Identify correctness, security, unintended changes, regressions, and scope creep. Do not propose edits until you explain the findings.");
-    setActivePanel("ai");
+    showPanel("ai");
     pushToast("AI diff review is ready in the assistant panel");
   };
   const openWorkspaceFile = (fileId: string) => {
@@ -528,20 +538,53 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     { id: "save", label: "Save workspace", hint: "Changes sync automatically", run: () => pushToast("Edits sync automatically with the room.") },
     { id: "close-tab", label: "Close active tab", hint: room.workspace.openFileIds.length > 1 ? "Close the current editor tab" : "The last tab stays open", run: () => { if (room.workspace.openFileIds.length > 1) socketRef.current?.emit("workspace:operation", { roomId: room.roomId, userId: session.userId, operation: { id: crypto.randomUUID(), type: "set-open-files", fileIds: room.workspace.openFileIds.filter((id) => id !== room.workspace.activeFileId) } }); } },
     { id: "toggle-explorer", label: "Toggle Explorer", run: () => selectActivity("explorer") },
-    { id: "toggle-ai", label: "Open AI assistant", run: () => { setActivePanel("ai"); setActivity("ai"); } },
+    { id: "toggle-ai", label: "Open AI assistant", run: () => { showPanel("ai"); setActivity("ai"); } },
     { id: "toggle-terminal", label: "Toggle terminal", hint: "Ctrl/Cmd+`", run: () => { setWorkspacePanelTab("terminal"); setIsOutputOpen(true); } },
     { id: "run-project", label: "Run project", hint: "External runner only for room source", run: () => { setWorkspacePanelTab("run"); setIsOutputOpen(true); void handleRunAction("run"); } },
     { id: "run-tests", label: "Run tests", run: () => { setWorkspacePanelTab("tests"); setIsOutputOpen(true); void handleRunAction("tests"); } },
     { id: "typecheck", label: "Run TypeScript check", run: () => { setWorkspacePanelTab("output"); setIsOutputOpen(true); void handleRunAction("typecheck"); } },
     { id: "lint", label: "Run ESLint", run: () => { setWorkspacePanelTab("output"); setIsOutputOpen(true); void handleRunAction("lint"); } },
     { id: "git-status", label: "Open Git status", run: () => selectActivity("source-control") },
-    { id: "ask-ai", label: "Ask AI about this file", run: () => { setAIAction("custom"); setActivePanel("ai"); } },
-    { id: "review-code", label: "Review current file with AI", run: () => { setAIAction("review"); setActivePanel("ai"); } }
+    { id: "ask-ai", label: "Ask AI about this file", run: () => { setAIAction("custom"); showPanel("ai"); } },
+    { id: "review-code", label: "Review current file with AI", run: () => { setAIAction("review"); showPanel("ai"); } }
   ];
 
   return (
     <main className="theme-page-room flex h-[100dvh] w-screen max-w-[100vw] flex-col overflow-hidden">
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+      {activePanel === "ai" ? (
+        <div className="fixed inset-x-3 bottom-3 z-50 h-[min(78dvh,44rem)] sm:left-auto sm:right-4 sm:w-[min(30rem,calc(100vw-2rem))]" role="dialog" aria-label="AI assistant">
+          <AIAssistantPanel
+            roomId={room.roomId}
+            workspaceId={room.workspace.id}
+            currentFileId={room.workspace.activeFileId}
+            currentFileName={room.workspace.files[room.workspace.activeFileId]?.name ?? "current file"}
+            currentVersion={room.version}
+            fileContents={Object.fromEntries(Object.values(room.workspace.files).map((file) => [file.id, file.content]))}
+            session={session}
+            canInsert={!room.isPaused}
+            execution={executionContext}
+            diagnostics={diagnostics}
+            onClose={() => setActivePanel(null)}
+            onInsertCode={insertAICode}
+            onReplaceSelection={replaceAISelection}
+            onReplaceFile={replaceAIFile}
+            onApplyPatch={applyAgentPatch}
+            onRejectPatch={rejectAgentPatch}
+            onValidatePatch={validateAgentPatch}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => showPanel("ai")}
+          className="ui-focus-ring fixed bottom-4 right-4 z-40 inline-flex h-12 w-12 items-center justify-center rounded-full border border-[var(--accent)]/40 bg-[var(--accent)] text-[var(--bg-primary)] shadow-[0_12px_30px_rgba(0,0,0,0.35)] transition hover:scale-105 hover:shadow-[0_16px_34px_rgba(0,0,0,0.42)]"
+          aria-label="Open AI assistant"
+          title="Open AI assistant"
+        >
+          <Bot className="h-5 w-5" aria-hidden="true" />
+        </button>
+      )}
       <CommandPalette open={commandPaletteOpen} commands={workspaceCommands} onClose={() => setCommandPaletteOpen(false)} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} themeId={themeId} onSelectTheme={setThemeId} />
       {resetConfirmOpen ? <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/55 px-4" role="dialog" aria-modal="true" aria-labelledby="reset-code-title"><div className="theme-panel-solid w-full max-w-sm rounded-2xl border p-5 shadow-2xl"><h2 id="reset-code-title" className="font-display text-base font-semibold text-[var(--text-primary)]">Reset shared code?</h2><p className="mt-2 text-sm leading-5 text-[var(--text-muted)]">Your current edits will be replaced with the {room.language} starter template for everyone in this room.</p><div className="mt-5 flex justify-end gap-2"><button type="button" onClick={() => setResetConfirmOpen(false)} className="theme-button-neutral rounded-lg border px-3 py-2 text-xs">Cancel</button><button type="button" onClick={confirmRestartRoom} className="theme-button-primary rounded-lg px-3 py-2 text-xs">Reset code</button></div></div></div> : null}
@@ -586,7 +629,6 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             ["explorer", FolderTree, "Explorer"],
             ["search", Search, "Search"],
             ["source-control", GitBranch, "Source control"],
-            ["ai", Bot, "AI Assistant"],
             ["run", TerminalSquare, "Run & Debug"],
             ["deploy", Cloud, "Deploy"],
             ["settings", Settings, "Settings"]
@@ -599,18 +641,17 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
         </aside>
 
         <aside className="hidden w-[280px] shrink-0 overflow-hidden lg:block">
-          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : "explorer"} onOpenMessages={() => setActivePanel("chat")} onOpenActivity={() => setActivePanel("activity")} onOpenFile={openWorkspaceFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} />
+          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onDownloadFile={handleDownloadFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} />
         </aside>
 
         <nav className="theme-panel-solid flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-2 py-1 lg:hidden" aria-label="Mobile workspace navigation">
           <button type="button" onClick={() => selectActivity("explorer")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "explorer" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Explorer</button>
           <button type="button" onClick={() => selectActivity("search")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "search" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Search</button>
           <button type="button" onClick={() => selectActivity("source-control")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "source-control" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Source control</button>
-          <button type="button" onClick={() => selectActivity("ai")} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">AI</button>
-          <button type="button" onClick={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
+          <button type="button" onClick={() => { setMobileWorkspaceOpen(false); showPanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
         </nav>
 
-        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : "explorer"} onOpenMessages={() => { setMobileWorkspaceOpen(false); setActivePanel("chat"); }} onOpenActivity={() => { setMobileWorkspaceOpen(false); setActivePanel("activity"); }} onOpenFile={openWorkspaceFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} /></div></div> : null}
+        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onDownloadFile={handleDownloadFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} /></div></div> : null}
 
         <section className="min-h-0 min-w-0 flex flex-1 flex-col p-2 sm:p-3">
           <div className="theme-panel-solid flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-[var(--shadow-soft)]">
@@ -629,7 +670,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             isPaused={room.isPaused}
             onSelectionChange={setAISelection}
             onDiagnosticsChange={setDiagnostics}
-            onOpenAIAssistant={(action) => { setAIAction(action ?? "custom"); setActivePanel("ai"); }}
+            onOpenAIAssistant={(action) => { setAIAction(action ?? "custom"); showPanel("ai"); }}
             onEditorAIReady={(actions) => { editorAIActionsRef.current = actions; }}
             /></div>
           </div>
@@ -638,38 +679,19 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
 
         <div
           className={`min-h-0 shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
-            activePanel !== null
+            (activePanel !== null && activePanel !== "ai") || isMediaOpen
               ? "fixed inset-y-16 right-0 z-30 flex w-[min(100vw-1rem,24rem)] border-l border-[var(--border)] shadow-[-16px_0_36px_rgba(0,0,0,0.28)] xl:static xl:w-[22rem] xl:border-l-0 xl:shadow-none 2xl:w-[24rem]"
               : "hidden xl:flex xl:w-0"
           }`}
         >
-          <aside className="theme-panel-solid flex min-h-0 w-full flex-col border-l border-[var(--border)]" aria-label="Collaboration panel">
+          {isMediaOpen ? <MediaCallPanel roomId={room.roomId} session={session} onClose={() => setIsMediaOpen(false)} /> : activePanel !== "ai" ? <aside className="theme-panel-solid flex min-h-0 w-full flex-col border-l border-[var(--border)]" aria-label="Collaboration panel">
             <div className="flex shrink-0 items-center border-b border-[var(--border)] px-2 pt-1">
-              <button type="button" onClick={() => setActivePanel("chat")} className={`border-b-2 px-2.5 py-2 text-xs font-medium ${activePanel === "chat" ? "border-[var(--accent)] text-[var(--text-primary)]" : "border-transparent text-[var(--text-muted)]"}`}>Chat</button>
-              <button type="button" onClick={() => setActivePanel("people")} className={`ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${activePanel === "people" ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}><Users className="h-3.5 w-3.5" />People</button>
-              <button type="button" onClick={() => setActivePanel("activity")} className={`inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${activePanel === "activity" ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}>Activity</button>
+              <button type="button" onClick={() => showPanel("chat")} className={`border-b-2 px-2.5 py-2 text-xs font-medium ${activePanel === "chat" ? "border-[var(--accent)] text-[var(--text-primary)]" : "border-transparent text-[var(--text-muted)]"}`}>Chat</button>
+              <button type="button" onClick={() => showPanel("people")} className={`ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${activePanel === "people" ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}><Users className="h-3.5 w-3.5" />People</button>
+              <button type="button" onClick={() => showPanel("activity")} className={`inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[11px] ${activePanel === "activity" ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)] hover:bg-[var(--badge-bg)]"}`}>Activity</button>
             </div>
             <div className="min-h-0 flex-1 overflow-hidden">
-          {activePanel === "ai" ? (
-            <AIAssistantPanel
-              roomId={room.roomId}
-              workspaceId={room.workspace.id}
-              currentFileId={room.workspace.activeFileId}
-              currentVersion={room.version}
-              fileContents={Object.fromEntries(Object.values(room.workspace.files).map((file) => [file.id, file.content]))}
-              session={session}
-              canInsert={!room.isPaused}
-              execution={executionContext}
-              diagnostics={diagnostics}
-              onClose={() => setActivePanel(null)}
-               onInsertCode={insertAICode}
-               onReplaceSelection={replaceAISelection}
-               onReplaceFile={replaceAIFile}
-               onApplyPatch={applyAgentPatch}
-               onRejectPatch={rejectAgentPatch}
-               onValidatePatch={validateAgentPatch}
-             />
-          ) : activePanel === "chat" ? (
+          {activePanel === "chat" ? (
             <ChatPanel
               messages={room.chat}
               participants={room.participants}
@@ -681,10 +703,8 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             />
           ) : activePanel === "people" ? <ParticipantsPanel participants={room.participants} editorTypingUsers={editorTypingUsers} session={session} ownerId={room.ownerId} roomId={room.roomId} socketRef={socketRef} onNotify={pushToast} /> : <RoomActivityPanel history={room.history} participants={room.participants} />}
             </div>
-            <div className="h-[236px] shrink-0 border-t border-[var(--border)]">
-              {isMediaOpen ? <MediaCallPanel roomId={room.roomId} session={session} onClose={() => setIsMediaOpen(false)} /> : <div className="flex h-full flex-col items-center justify-center p-4 text-center"><Phone className="h-6 w-6 text-[var(--accent)]" /><p className="mt-2 text-sm font-medium text-[var(--text-primary)]">Voice &amp; Video</p><p className="mt-1 text-xs text-[var(--text-muted)]">Join a room call without leaving the workspace.</p><button type="button" onClick={openMedia} className="theme-button-primary mt-3 inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium"><Phone className="h-3.5 w-3.5" />Join call</button></div>}
-            </div>
-          </aside>
+          </aside> : null
+          }
         </div>
       </div>
     </main>

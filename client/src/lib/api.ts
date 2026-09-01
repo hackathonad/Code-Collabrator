@@ -4,9 +4,22 @@ import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AI
 import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import type { ExecutionAction, ExecutionCapabilities, ExecutionRecord } from "../types/execution";
+import { parseAgentEvent } from "./agentProtocol";
 import { storage } from "./storage";
 
 const API_URL = import.meta.env?.VITE_API_URL?.replace(/\/+$/, "") ?? "";
+const errorWithCause = (message: string, cause: unknown) => Object.assign(new Error(message), { cause });
+
+const normalizeAgentResult = (value: unknown): AgentCompletionResult => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The coding agent returned an invalid result.");
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.finalText !== "string" || raw.finalText.length > 12_000 || !Array.isArray(raw.events) || raw.events.length > 80 || !Array.isArray(raw.patches) || raw.patches.length > 10) throw new Error("The coding agent returned an invalid result.");
+  const events = raw.events.map((event) => parseAgentEvent(event));
+  if (events.some((event): event is null => event === null)) throw new Error("The coding agent returned an invalid event.");
+  const patches = raw.patches.map((patch) => parseAgentEvent({ type: "patch_proposal", patch }));
+  if (patches.some((event): event is null => event === null)) throw new Error("The coding agent returned an invalid patch.");
+  return { ...raw, events: events as AgentEvent[] } as AgentCompletionResult;
+};
 
 export class ApiNetworkError extends Error {
   constructor(message = "Cannot reach the Code Collaborator server. Make sure the backend is running and try again.") {
@@ -391,7 +404,7 @@ export const api = {
       signal
     });
     const payload = await readJson<{ ok: true; result: AgentCompletionResult }>(response);
-    return payload.result;
+    return normalizeAgentResult(payload.result);
   },
 
   async streamAgent(body: AgentRequestPayload, onEvent: (event: AgentEvent) => void, signal?: AbortSignal) {
@@ -414,8 +427,14 @@ export const api = {
       const value = line.slice(5).trim();
       if (!value) return;
       let event: AgentEvent;
-      try { event = JSON.parse(value) as AgentEvent; } catch { throw new Error("The coding agent returned malformed streaming data."); }
-      if (!event || !["status", "context", "plan", "diagnosis", "tool_call", "tool_result", "patch_proposal", "patch_review", "review", "validation", "execution", "final", "error"].includes(event.type)) throw new Error("The coding agent returned an invalid streaming event.");
+      try {
+        const parsedEvent = parseAgentEvent(JSON.parse(value));
+        if (!parsedEvent) throw new Error("The coding agent returned an invalid streaming event.");
+        event = parsedEvent;
+      } catch (error) {
+        if (error instanceof Error && error.message === "The coding agent returned an invalid streaming event.") throw error;
+        throw errorWithCause("The coding agent returned malformed streaming data.", error);
+      }
       onEvent(event);
       if (event.type === "error") throw new ApiRequestError(event.code === "TIMEOUT" ? 504 : 502, event.message, event.code);
     };

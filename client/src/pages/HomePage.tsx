@@ -124,7 +124,7 @@ export const HomePage = ({ guestMode = false }: { guestMode?: boolean }) => {
     }
   };
 
-  const heading = "Realtime collaborative workspaces";
+  const heading = "Build together with your team and AI coding teammate";
   const identityCopy = "Choose a display name and start collaborating immediately. No account is required.";
 
   return (
@@ -167,6 +167,7 @@ export const HomePage = ({ guestMode = false }: { guestMode?: boolean }) => {
               <input
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
+                aria-label="Display name"
                 placeholder="Your display name"
                 className="theme-input mt-5 w-full rounded-2xl border px-4 py-3 outline-none transition"
               />
@@ -207,6 +208,7 @@ export const HomePage = ({ guestMode = false }: { guestMode?: boolean }) => {
                 <input
                   value={roomId}
                   onChange={(event) => setRoomId(event.target.value)}
+                  aria-label="Room ID"
                   placeholder="Paste room ID"
                   className="theme-input rounded-2xl border px-4 py-3 outline-none transition"
                 />
@@ -221,7 +223,7 @@ export const HomePage = ({ guestMode = false }: { guestMode?: boolean }) => {
               </div>
             </form>
 
-            {error ? <p className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}
+            {error ? <p role="alert" className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}
           </div>
 
           <div className="theme-panel motion-reveal motion-surface rounded-[32px] border p-6 shadow-panel backdrop-blur-xl">
