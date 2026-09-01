@@ -6,7 +6,7 @@ import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
 import { emitAgentWorkspaceChange, getAgentProposal, getPublicAgentProposalState, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import { cancelAgentTask, getAgentTask, getPublicAgentTaskHistory, recordTaskPatches, recordTaskValidation, registerAgentTaskController, startAgentTask, taskStatusForResult, unregisterAgentTaskController, updateAgentTask } from "../modules/agent/agentTaskHistory";
+import { addAgentTaskNote, cancelAgentTask, findSimilarAgentTask, getAgentTask, getPublicAgentTaskHistory, recordTaskPatches, recordTaskValidation, registerAgentTaskController, startAgentTask, taskStatusForResult, unregisterAgentTaskController, updateAgentTask } from "../modules/agent/agentTaskHistory";
 import { createValidationRunner } from "../modules/agent/validationRunner";
 import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
@@ -27,9 +27,23 @@ const activeAgentControllers = new Map<string, AbortController>();
 const MAX_AGENT_REQUEST_BYTES = 300_000;
 const clip = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : "";
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const publicSimilarTask = (task: NonNullable<ReturnType<typeof getAgentTask>>) => ({
+  taskId: task.taskId,
+  roomId: task.roomId,
+  mode: task.mode,
+  intent: task.intent,
+  summary: task.summary,
+  status: task.status,
+  patchStatus: task.patchStatus,
+  validationStatus: task.validationStatus,
+  patchCount: task.patchCount,
+  createdAt: task.createdAt,
+  updatedAt: task.updatedAt,
+  ...(task.initiatorLabel ? { requestedBy: task.initiatorLabel } : {})
+});
 
 class AgentRouteError extends Error {
-  constructor(public readonly status: number, message: string, public readonly code = "INVALID_REQUEST") { super(message); }
+  constructor(public readonly status: number, message: string, public readonly code = "INVALID_REQUEST", public readonly details?: Record<string, unknown>) { super(message); }
 }
 
 const rateLimit = (key: string, limit = REQUEST_LIMIT) => {
@@ -110,6 +124,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
   const executionRaw = isRecord(body.execution) ? body.execution : undefined;
   const execution = executionRaw && clip(executionRaw.output, 6_000) ? { output: clip(executionRaw.output, 6_000), failed: Boolean(executionRaw.failed) } : undefined;
   const taskId = typeof body.taskId === "string" ? body.taskId.trim().slice(0, 128) : undefined;
+  const allowDuplicateTask = body.allowDuplicateTask === true;
   const continuationTaskId = typeof body.continuationTaskId === "string" ? body.continuationTaskId.trim().slice(0, 128) : undefined;
   const conversationId = typeof body.conversationId === "string" ? body.conversationId.trim().slice(0, 128) : undefined;
   const suppliedContinuity = typeof body.continuitySummary === "string" ? body.continuitySummary.slice(0, 4_000) : "";
@@ -137,6 +152,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
     conversationId,
     continuitySummary,
     initiatorLabel: participant.displayName,
+    allowDuplicateTask,
     mode,
     language: activeFile?.language ?? room.language,
     settings,
@@ -147,7 +163,7 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
 };
 
 const sendError = (response: Response, error: unknown) => {
-  if (error instanceof AgentRouteError) { response.status(error.status).json({ ok: false, message: error.message, code: error.code }); return; }
+  if (error instanceof AgentRouteError) { response.status(error.status).json({ ok: false, message: error.message, code: error.code, ...(error.details ?? {}) }); return; }
   if (error instanceof AgentRuntimeError) { response.status(error.code === "TIMEOUT" ? 504 : error.code === "UNAUTHORIZED_CONTEXT" ? 403 : 499).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof AIProviderUnavailableError) { response.status(503).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof AIProviderRequestError) { response.status(error.code === "CONTEXT_TOO_LARGE" ? 413 : error.code === "RATE_LIMITED" ? 429 : 502).json({ ok: false, message: error.message, code: error.code }); return; }
@@ -243,6 +259,8 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
   try {
     const prepared = await prepareRequest(request as GuestRequest);
     if (prepared.agent.taskId && getAgentTask(prepared.agent.taskId, prepared.agent.roomId, prepared.agent.userId)) throw new AgentRouteError(409, "This agent request was already started. Use its task history or start a new request.", "DUPLICATE_TASK");
+    const similar = prepared.agent.allowDuplicateTask ? null : findSimilarAgentTask(prepared.agent.roomId, prepared.agent.userInstruction, prepared.agent.continuationTaskId);
+    if (similar) throw new AgentRouteError(409, "A similar AI task is already running in this room.", "SIMILAR_TASK", { existingTask: publicSimilarTask(similar) });
     const task = startAgentTask(prepared.agent);
     if (!task) throw new AgentRouteError(409, "This agent request was already started. Use its task history or start a new request.", "DUPLICATE_TASK");
     taskId = task.taskId;
@@ -264,6 +282,11 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
   try { prepared = await prepareRequest(request as GuestRequest); } catch (error) { sendError(response, error); return; }
   if (prepared.agent.taskId && getAgentTask(prepared.agent.taskId, prepared.agent.roomId, prepared.agent.userId)) {
     response.status(409).json({ ok: false, message: "This agent request was already started. Use its task history or start a new request.", code: "DUPLICATE_TASK" });
+    return;
+  }
+  const similar = prepared.agent.allowDuplicateTask ? null : findSimilarAgentTask(prepared.agent.roomId, prepared.agent.userInstruction, prepared.agent.continuationTaskId);
+  if (similar) {
+    response.status(409).json({ ok: false, message: "A similar AI task is already running in this room.", code: "SIMILAR_TASK", existingTask: publicSimilarTask(similar) });
     return;
   }
   response.status(200);
@@ -300,6 +323,25 @@ router.post("/rooms/:roomId/agent/stream", guestSession, async (request, respons
     response.off("close", abortIfDisconnected);
     response.end();
   }
+});
+
+router.post("/rooms/:roomId/agent/:taskId/notes", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const taskId = typeof request.params.taskId === "string" ? request.params.taskId.slice(0, 128) : "";
+    const message = clip(body.message, 280);
+    if (!roomId || !userId || !taskId || !message) throw new AgentRouteError(400, "A valid room session, task ID, and note are required");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    const participant = roomStore.getParticipant(roomId, userId);
+    const task = getAgentTask(taskId, roomId);
+    if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
+    const updated = addAgentTaskNote(taskId, roomId, userId, participant.displayName, message);
+    if (!updated) throw new AgentRouteError(409, "This task note could not be added", "TASK_NOTE_REJECTED");
+    roomStore.recordActivity(roomId, userId, "agent", "added a note to a shared AI task", { taskId });
+    response.json({ ok: true, task: updated });
+  } catch (error) { sendError(response, error); }
 });
 
 router.post("/rooms/:roomId/agent/:taskId/cancel", guestSession, async (request, response) => {
@@ -412,7 +454,7 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     const stored = getAgentProposal(patch.patchId);
     if (!stored || stored.patch.roomId !== roomId || !proposalMatches(stored.patch, patch)) throw new AgentRouteError(409, "The proposal is no longer available for this room session", "PATCH_CONFLICT");
     if (stored.status === "proposal_stale" || patch.baseVersion !== room.version) {
-      updateAgentProposal(patch.patchId, "proposal_stale", room.version);
+      updateAgentProposal(patch.patchId, "proposal_stale", room.version, userId);
       if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
       throw new AgentRouteError(409, "This proposal is stale because the room changed. Generate a new proposal.", "PATCH_STALE");
     }
@@ -423,7 +465,7 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     if (!previewResult.ok || !previewResult.patch) throw new AgentRouteError(409, previewResult.summary, "PATCH_CONFLICT");
     if (patch.suppliedPatchId !== previewResult.patch.patchId || patch.baseVersion !== previewResult.patch.baseVersion) throw new AgentRouteError(409, "The patch identity does not match the current file", "PATCH_CONFLICT");
     if (patch.fileId && patch.fileId !== previewResult.patch.fileId) throw new AgentRouteError(409, "The patch file does not match its path", "PATCH_CONFLICT");
-    updateAgentProposal(patch.patchId, "proposal_approved", room.version);
+    updateAgentProposal(patch.patchId, "proposal_approved", room.version, userId);
     logSafeEvent("agent", "patch_approval", { roomId, patchId: patch.patchId, userId });
     if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "applying" });
     const appliedResult = await createAgentToolRegistry({
@@ -435,13 +477,13 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
     if (!appliedResult.ok || !appliedResult.patch) {
       const currentVersion = roomStore.getRoomSnapshot(roomId).version;
       if (currentVersion !== patch.baseVersion) {
-        updateAgentProposal(patch.patchId, "proposal_stale", currentVersion);
+        updateAgentProposal(patch.patchId, "proposal_stale", currentVersion, userId);
         if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
       }
       throw new AgentRouteError(409, appliedResult.summary, currentVersion !== patch.baseVersion ? "PATCH_STALE" : "PATCH_CONFLICT");
     }
     await roomPersistence.saveRoom(roomStore.getRoomSnapshot(roomId));
-    updateAgentProposal(patch.patchId, "proposal_applied", appliedResult.patch.baseVersion + 1);
+    updateAgentProposal(patch.patchId, "proposal_applied", appliedResult.patch.baseVersion + 1, userId);
     logSafeEvent("agent", "patch_application", { roomId, patchId: patch.patchId, userId, files: appliedResult.patch.files?.length ?? 1 });
     if (stored.patch.taskId) {
       updateAgentTask(stored.patch.taskId, { status: "validating", patchStatus: "applied" });
@@ -469,7 +511,7 @@ router.post("/rooms/:roomId/agent/proposal", guestSession, async (request, respo
       return;
     }
     if (stored.status !== "proposal_created") throw new AgentRouteError(409, "The proposal is no longer pending", "PATCH_CONFLICT");
-    updateAgentProposal(patchId, "proposal_rejected");
+    updateAgentProposal(patchId, "proposal_rejected", undefined, userId);
     logSafeEvent("agent", "patch_rejection", { roomId, patchId, userId });
     if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "completed", patchStatus: "rejected" });
     response.json({ ok: true, status: "rejected", patchId });

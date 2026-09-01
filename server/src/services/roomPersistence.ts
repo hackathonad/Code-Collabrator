@@ -1,5 +1,5 @@
 ﻿import { supabaseAdmin } from "../lib/supabase";
-import type { RoomSnapshot, WorkspaceState } from "../modules/rooms/roomTypes";
+import type { RoomActivityEntry, RoomSnapshot, WorkspaceState } from "../modules/rooms/roomTypes";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 const toIso = (timestamp: number | undefined) => (timestamp ? new Date(timestamp).toISOString() : null);
@@ -23,6 +23,28 @@ interface RoomRow {
   workspace: WorkspaceState | null;
 }
 
+const activityKinds = new Set<RoomActivityEntry["kind"]>(["room", "presence", "file", "agent", "patch", "validation", "git", "chat"]);
+const persistedActivity = (settings: Record<string, unknown> | null): RoomActivityEntry[] => {
+  const raw = settings?.activity;
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 60).flatMap((entry): RoomActivityEntry[] => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const value = entry as Record<string, unknown>;
+    if (typeof value.id !== "string" || typeof value.actorName !== "string" || typeof value.message !== "string" || !activityKinds.has(value.kind as RoomActivityEntry["kind"]) || typeof value.createdAt !== "number") return [];
+    return [{
+      id: value.id.slice(0, 128),
+      roomId: typeof value.roomId === "string" ? value.roomId.slice(0, 32) : "",
+      ...(typeof value.actorId === "string" ? { actorId: value.actorId.slice(0, 128) } : {}),
+      actorName: value.actorName.slice(0, 80),
+      kind: value.kind as RoomActivityEntry["kind"],
+      message: value.message.slice(0, 220),
+      createdAt: Math.max(0, Math.round(value.createdAt)),
+      ...(typeof value.taskId === "string" ? { taskId: value.taskId.slice(0, 128) } : {}),
+      ...(typeof value.fileId === "string" ? { fileId: value.fileId.slice(0, 128) } : {})
+    }].filter((entry) => entry.roomId);
+  });
+};
+
 const rowToSnapshot = (row: RoomRow): RoomSnapshot => ({
   roomId: row.id,
   ownerId: row.owner_id,
@@ -35,6 +57,7 @@ const rowToSnapshot = (row: RoomRow): RoomSnapshot => ({
   participants: row.participants ?? [],
   chat: row.chat ?? [],
   history: row.history ?? [],
+  activity: persistedActivity(row.settings),
   workspace: row.workspace as WorkspaceState,
   deletedAt: row.deleted_at ? fromIso(row.deleted_at) : undefined
 });
@@ -120,7 +143,7 @@ export const createRoomPersistence = (client: PersistenceClient | null) => {
         updated_at: toIso(snapshot.updatedAt),
         last_activity_at: toIso(snapshot.updatedAt),
         deleted_at: toIso(snapshot.deletedAt),
-        settings: {}
+        settings: { activity: snapshot.activity.slice(0, 60) }
       },
       { onConflict: "id" }
     );

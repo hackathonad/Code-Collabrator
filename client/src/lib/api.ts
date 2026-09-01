@@ -29,7 +29,7 @@ export class ApiNetworkError extends Error {
 }
 
 export class ApiRequestError extends Error {
-  constructor(public readonly status: number, message: string, public readonly code?: string) {
+  constructor(public readonly status: number, message: string, public readonly code?: string, public readonly details?: Record<string, unknown>) {
     super(message);
     this.name = "ApiRequestError";
   }
@@ -96,7 +96,7 @@ const roomSessionQuery = (session?: UserSession | null) =>
 
 const readJson = async <T>(response: Response): Promise<T> => {
   if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as { message?: string; code?: string };
+    const payload = (await response.json().catch(() => ({}))) as { message?: string; code?: string; existingTask?: unknown };
     const fallback = response.status === 400
       ? "The request was invalid. Check the room ID and submitted values."
       : response.status === 401
@@ -108,7 +108,7 @@ const readJson = async <T>(response: Response): Promise<T> => {
             : response.status === 429
               ? "Too many requests. Please wait a moment and try again."
               : "The server rejected the request. Try again shortly.";
-    throw new ApiRequestError(response.status, payload.message ?? fallback, payload.code);
+    throw new ApiRequestError(response.status, payload.message ?? fallback, payload.code, payload.existingTask ? { existingTask: payload.existingTask } : undefined);
   }
 
   try {
@@ -415,8 +415,8 @@ export const api = {
       signal
     });
     if (!response.ok) {
-      const payload = await response.json().catch(() => ({})) as { message?: string; code?: string };
-      throw new ApiRequestError(response.status, payload.message ?? "Coding-agent streaming request failed", payload.code);
+      const payload = await response.json().catch(() => ({})) as { message?: string; code?: string; existingTask?: unknown };
+      throw new ApiRequestError(response.status, payload.message ?? "Coding-agent streaming request failed", payload.code, payload.existingTask ? { existingTask: payload.existingTask } : undefined);
     }
     const reader = response.body?.getReader();
     if (!reader) throw new Error("The coding agent did not return a streaming response");
@@ -493,6 +493,11 @@ export const api = {
   async cancelAgentTask(roomId: string, guestToken: string | undefined, taskId: string) {
     const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/cancel`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken }) });
     return await readJson<{ ok: true; taskId: string; status: "cancelled" }>(response);
+  },
+
+  async addAgentTaskNote(roomId: string, guestToken: string | undefined, taskId: string, message: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/notes`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, message }) });
+    return await readJson<{ ok: true; task: AgentTaskPublic }>(response);
   },
 
   async validateAgent(roomId: string, guestToken: string | undefined, category: ValidationCategory, taskId?: string) {

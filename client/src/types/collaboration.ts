@@ -3,6 +3,19 @@ export type RoomRole = "owner" | "moderator" | "member" | "guest";
 export type UserIdentityKind = "guest";
 export type ParticipantAccent = "blue" | "emerald" | "amber" | "rose" | "violet" | "cyan";
 export type PresenceStatus = "active" | "idle" | "offline";
+export type RoomActivityKind = "room" | "presence" | "file" | "agent" | "patch" | "validation" | "git" | "chat";
+
+export interface RoomActivityEntry {
+  id: string;
+  roomId: string;
+  actorId?: string;
+  actorName: string;
+  kind: RoomActivityKind;
+  message: string;
+  createdAt: number;
+  taskId?: string;
+  fileId?: string;
+}
 
 export interface CursorState {
   lineNumber: number;
@@ -31,6 +44,9 @@ export interface Participant {
   cursor: CursorState;
   editsCount: number;
   timeSpentMs: number;
+  activeFileId?: string;
+  activeFileName?: string;
+  activity?: string;
 }
 
 export interface ChatMessage {
@@ -140,6 +156,7 @@ export interface RoomSnapshot {
   participants: Participant[];
   chat: ChatMessage[];
   history: HistoryEntry[];
+  activity: RoomActivityEntry[];
   workspace: WorkspaceState;
 }
 

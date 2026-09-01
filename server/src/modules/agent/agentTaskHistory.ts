@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentPatch, AgentRequest, AgentResult, AgentTaskPublic, AgentTaskStatus, AgentValidationStatus } from "./agentTypes";
+import type { AgentPatch, AgentRequest, AgentResult, AgentTaskNote, AgentTaskPublic, AgentTaskStatus, AgentValidationStatus } from "./agentTypes";
 import { classifyTask } from "./agentIntelligence";
 import { logSafeEvent } from "../../utils/safeLogger";
 import { recordAgentMemory } from "./agentMemory";
@@ -38,6 +38,17 @@ const transitions: Record<AgentTaskStatus, AgentTaskStatus[]> = {
 };
 
 const safeSummary = (value: string) => value.replace(/(api[_-]?key|secret|password|token)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").replace(/\s+/g, " ").trim().slice(0, 240) || "Coding-agent task";
+const safeNote = (value: string) => value.replace(/(api[_-]?key|secret|password|token|authorization|cookie)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").replace(/\s+/g, " ").trim().slice(0, 280);
+const activeStatuses = new Set<AgentTaskStatus>(["queued", "planning", "running", "waiting_for_approval", "applying", "validating"]);
+const normalizedTaskWords = (value: string) => new Set(value.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((word) => word.length > 2 && !["the", "and", "for", "with", "this", "that", "from", "into"].includes(word)));
+const similarTask = (left: string, right: string) => {
+  const leftWords = normalizedTaskWords(left);
+  const rightWords = normalizedTaskWords(right);
+  if (!leftWords.size || !rightWords.size) return false;
+  const overlap = [...leftWords].filter((word) => rightWords.has(word)).length;
+  return leftWords.size === rightWords.size && overlap >= Math.max(2, Math.ceil(leftWords.size * 0.7))
+    || (overlap >= 3 && overlap / Math.min(leftWords.size, rightWords.size) >= 0.75);
+};
 
 const publicTask = (task: AgentTaskRecord): AgentTaskPublic => ({
   taskId: task.taskId,
@@ -47,6 +58,8 @@ const publicTask = (task: AgentTaskRecord): AgentTaskPublic => ({
   intent: task.intent,
   ...(task.classification ? { classification: task.classification } : {}),
   ...(task.initiatorLabel ? { initiatorLabel: task.initiatorLabel } : {}),
+  ...(task.initiatorLabel ? { requestedBy: task.initiatorLabel } : {}),
+  ...(task.notes?.length ? { notes: task.notes.map((note) => ({ ...note })) } : {}),
   summary: task.summary,
   status: task.status,
   patchStatus: task.patchStatus,
@@ -101,6 +114,7 @@ export const startAgentTask = (request: AgentRequest) => {
     intent: request.intent ?? (request.mode === "DEBUG" ? "fix" : request.mode === "EDIT" ? "generate" : "explain"),
     classification: classifyTask(request),
     ...(request.initiatorLabel ? { initiatorLabel: request.initiatorLabel.slice(0, 80) } : {}),
+    notes: [],
     summary: safeSummary(request.userInstruction),
     provider: request.settings.provider,
     model: request.settings.model.slice(0, 160),
@@ -131,6 +145,21 @@ export const getAgentTask = (taskId: string, roomId?: string, userId?: string) =
     if (task) return task;
   }
   return null;
+};
+
+export const findSimilarAgentTask = (roomId: string, userInstruction: string, excludeTaskId?: string) => (tasks.get(roomId) ?? [])
+  .find((task) => task.taskId !== excludeTaskId && activeStatuses.has(task.status) && similarTask(task.summary, userInstruction)) ?? null;
+
+export const addAgentTaskNote = (taskId: string, roomId: string, userId: string, authorName: string, message: string) => {
+  const task = getAgentTask(taskId, roomId);
+  const note = safeNote(message);
+  if (!task || !note) return null;
+  const entry: AgentTaskNote = { id: randomUUID(), authorName: safeSummary(authorName).slice(0, 80), message: note, createdAt: Date.now() };
+  task.notes = [...(task.notes ?? []), entry].slice(-8);
+  task.updatedAt = entry.createdAt;
+  logSafeEvent("agent", "task_note", { taskId, roomId });
+  emit("task_updated", task);
+  return publicTask(task);
 };
 
 export const registerAgentTaskController = (taskId: string, controller: AbortController) => {

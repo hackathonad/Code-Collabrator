@@ -146,7 +146,7 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
   };
 
   const restore = workspace.trash.find((entry) => entry.kind === "file");
-  if (mode === "deploy") return <DeployPanel onCopyRoomLink={onCopyRoomLink ?? (() => onNotify("Copy the workspace invite from the room toolbar."))} onDownloadFile={onDownloadFile ?? (() => onNotify("Download the current source from the room toolbar."))} />;
+  if (mode === "deploy") return <DeployPanel onCopyRoomLink={onCopyRoomLink ?? (() => onNotify("Copy the workspace invite from the room toolbar."))} onDownloadFile={onDownloadFile ?? (() => onNotify("Download the current source from the room toolbar."))} onNotify={onNotify} />;
   if (mode === "source-control") return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
     <div className="flex items-center justify-between gap-2 px-3"><div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Workspace</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">Source control</h2></div><button type="button" onClick={refreshWorkspace} title="Refresh workspace status" className="rounded p-1.5 text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]"><RefreshCw className="h-4 w-4" /></button></div>
     <div className="min-h-0 flex-1 overflow-auto pt-2"><SourceControlPanel roomId={roomId} session={session} repository={repository} loading={gitLoading} error={gitError} onRefresh={onRefreshGit ?? (async () => undefined)} onNotify={onNotify} onReviewDiff={onReviewDiff} /></div>

@@ -1,10 +1,10 @@
-import { Bot, Check, ChevronDown, ClipboardCopy, FileDiff, LoaderCircle, Paperclip, Plus, RefreshCw, Send, Sparkles, Square, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ClipboardCopy, FileDiff, ListChecks, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Send, Sparkles, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { api } from "../../lib/api";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { useAIStore } from "../../store/useAIStore";
 import type { AIAction, AIConversationMessage, AIProviderId } from "../../types/ai";
-import type { AgentEvent, AgentMode, AgentPatch, AgentValidationSummary, ValidationCategory } from "../../types/agent";
+import type { AgentEvent, AgentMode, AgentPatch, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../../types/agent";
 import type { UserSession } from "../../types/collaboration";
 
 interface AIAssistantPanelProps {
@@ -81,6 +81,12 @@ const inferWorkflow = (prompt: string, fallbackAction: AIAction): { action: AIAc
   if (/\b(explain|how|why|what does|summari[sz])\b/.test(value)) return { action: "explain", mode: "EXPLAIN" };
   return { action: fallbackAction, mode: modeForAction[fallbackAction] ?? "ASK" };
 };
+
+const taskStatusLabel: Record<AgentTaskPublic["status"], string> = {
+  queued: "Queued", planning: "Planning", running: "Investigating", waiting_for_approval: "Needs approval", applying: "Applying", validating: "Validating", completed: "Completed", cancelled: "Cancelled", failed: "Failed", timed_out: "Timed out", conflict: "Conflict"
+};
+
+const taskStatusTone = (status: AgentTaskPublic["status"]) => status === "completed" ? "text-emerald-300" : ["failed", "timed_out", "conflict"].includes(status) ? "text-rose-300" : ["queued", "cancelled"].includes(status) ? "text-[var(--text-faint)]" : "text-amber-300";
 
 const CodeBlock = ({
   value,
@@ -242,6 +248,9 @@ export const AIAssistantPanel = ({
   const [assistantSetupOpen, setAssistantSetupOpen] = useState(false);
   const [attachments, setAttachments] = useState<AssistantAttachment[]>([]);
   const [attachmentNotice, setAttachmentNotice] = useState<string | null>(null);
+  const [taskQueueOpen, setTaskQueueOpen] = useState(false);
+  const [noteTaskId, setNoteTaskId] = useState<string | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
   const endRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<AssistantAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -257,6 +266,8 @@ export const AIAssistantPanel = ({
   const hasAssistantResult = Boolean(conversation?.messages.some((message) => message.role === "assistant" && message.content.trim()));
   const context = { roomId, workspaceId, currentFileId, guestToken: session.guestToken, selection: ai.selection, execution, diagnostics };
   const unavailableMessage = provider?.health === "no-models" ? "No model is available on the selected assistant." : provider?.health === "not-configured" ? "The assistant needs server-side setup." : provider ? `${provider.label} is unavailable right now.` : "The assistant is checking its connection.";
+  const sharedTasks = ai.agentTasks.slice(0, 8);
+  const activeTaskCount = ai.agentTasks.filter((task) => !["completed", "cancelled", "failed", "timed_out", "conflict"].includes(task.status)).length;
 
   const selectProvider = (providerId: string) => {
     const next = ai.providers.find((entry) => entry.id === providerId);
@@ -266,6 +277,19 @@ export const AIAssistantPanel = ({
     ai.setAction(reviewOnly ? "review" : "generate");
     ai.setAgentMode(reviewOnly ? "ASK" : "EDIT");
     ai.setDraft(reviewOnly ? `Review the current version of ${patch.path} after a collaborator changed it.` : `Regenerate the proposed change for ${patch.path} using the current workspace version.`);
+  };
+
+  const submitTaskNote = async (taskId: string) => {
+    const message = noteDraft.trim();
+    if (!message) return;
+    try {
+      const result = await api.addAgentTaskNote(roomId, session.guestToken, taskId, message);
+      useAIStore.getState().receiveAgentTask({ type: "task_updated", task: result.task });
+      setNoteDraft("");
+    } catch (issue) {
+      useAIStore.getState().setDraft(ai.draft);
+      setAttachmentNotice(issue instanceof Error ? issue.message : "The task note could not be added.");
+    }
   };
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
@@ -346,7 +370,7 @@ export const AIAssistantPanel = ({
       <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--accent)]/15 text-[var(--accent)]"><Bot className="h-5 w-5" aria-hidden="true" /></div>
-          <div className="min-w-0"><p className="font-display text-sm font-semibold text-[var(--text-primary)]">AI Assistant</p><p className="truncate text-[11px] text-[var(--text-faint)]">Ask, build, debug, or explain anything in this room</p></div>
+          <div className="min-w-0"><p className="font-display text-sm font-semibold text-[var(--text-primary)]">Coding assistant</p><p className="truncate text-[11px] text-[var(--text-faint)]">Chat to build, debug, review, or explain</p></div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <button type="button" onClick={() => ai.newConversation()} className="theme-button-neutral rounded-lg border p-2" title="Start a new chat" aria-label="Start a new chat"><Plus className="h-4 w-4" /></button>
@@ -373,6 +397,24 @@ export const AIAssistantPanel = ({
           </select></label>
         </div>
         <p className="mt-2 text-[10px] leading-4 text-[var(--text-faint)]">Provider credentials stay on the server. Choose an available provider explicitly; the assistant never switches silently.</p>
+      </details>
+
+      {ai.duplicateTask ? <div className="mx-4 mt-3 rounded-xl border border-amber-400/25 bg-amber-400/5 p-3 text-[11px]" role="status">
+        <p className="font-semibold text-amber-200">A similar AI task is already running.</p>
+        <p className="mt-1 text-[var(--text-muted)]">{ai.duplicateTask.summary} · {taskStatusLabel[ai.duplicateTask.status]}</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <button type="button" onClick={() => { setTaskQueueOpen(true); window.setTimeout(() => document.getElementById("shared-ai-tasks")?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 0); }} className="theme-button-neutral rounded-lg border px-2.5 py-1.5 text-[11px]">View existing task</button>
+          <button type="button" onClick={() => { ai.setAllowDuplicateTask(true); ai.clearDuplicateTask(); void ai.retryLast(context); }} className="theme-button-primary rounded-lg px-2.5 py-1.5 text-[11px]">Start anyway</button>
+        </div>
+      </div> : null}
+
+      <details id="shared-ai-tasks" open={taskQueueOpen} onToggle={(event) => setTaskQueueOpen(event.currentTarget.open)} className="mx-4 mt-3 shrink-0 rounded-xl border border-[var(--border)] bg-[var(--badge-bg)] px-3 py-2">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] font-semibold text-[var(--text-primary)]"><ListChecks className="h-3.5 w-3.5 text-[var(--accent)]" />Shared AI tasks <span className="font-normal text-[var(--text-muted)]">{activeTaskCount ? `${activeTaskCount} active` : "room history"}</span></summary>
+        {sharedTasks.length ? <div className="mt-2 space-y-2">{sharedTasks.map((task) => <div key={task.taskId} className="rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] p-2">
+          <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><p className="truncate text-[11px] font-medium text-[var(--text-primary)]">{task.summary}</p><p className="mt-0.5 text-[10px] text-[var(--text-faint)]">Requested by {task.requestedBy ?? task.initiatorLabel ?? "a collaborator"} · <span className={taskStatusTone(task.status)}>{taskStatusLabel[task.status]}</span>{task.patchCount ? ` · ${task.patchCount} patch${task.patchCount === 1 ? "" : "es"}` : ""}</p></div><button type="button" onClick={() => setNoteTaskId(noteTaskId === task.taskId ? null : task.taskId)} className="rounded p-1 text-[var(--text-muted)] hover:bg-white/10 hover:text-[var(--text-primary)]" title="Add a task note" aria-label={`Add note to ${task.summary}`}><MessageSquare className="h-3.5 w-3.5" /></button></div>
+          {task.notes?.length ? <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">{task.notes.slice(-3).map((note) => <p key={note.id} className="text-[10px] leading-4 text-[var(--text-muted)]"><span className="font-medium text-[var(--text-secondary)]">{note.authorName}:</span> {note.message}</p>)}</div> : null}
+          {noteTaskId === task.taskId ? <form className="mt-2 flex gap-1.5" onSubmit={(event) => { event.preventDefault(); void submitTaskNote(task.taskId); }}><input value={noteDraft} onChange={(event) => setNoteDraft(event.target.value.slice(0, 280))} maxLength={280} placeholder="Add a note for the team" className="theme-input min-w-0 flex-1 rounded-lg border px-2 py-1.5 text-[10px]" /><button type="submit" className="theme-button-neutral rounded-lg border px-2 py-1.5 text-[10px]">Add</button></form> : null}
+        </div>)}</div> : <p className="mt-2 text-[10px] text-[var(--text-faint)]">No shared AI tasks yet. Start one from the chat below.</p>}
       </details>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4" onScroll={(event) => { const element = event.currentTarget; setFollowLatest(element.scrollHeight - element.scrollTop - element.clientHeight < 48); }}>

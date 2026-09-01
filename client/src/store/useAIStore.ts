@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { api } from "../lib/api";
+import { api, ApiRequestError } from "../lib/api";
+import { parseAgentTaskEvent } from "../lib/collaborationProtocol";
 import type { AIAction, AIConversation, AIConversationMessage, AILifecycleState, AIProviderDescriptor, AIRequestContext, AISelection, AISettings } from "../types/ai";
 import type { AgentEvent, AgentMode, AgentPatch, AgentProposalEvent, AgentProposalPublic, AgentProposalStatus, AgentTaskEvent, AgentTaskPublic, AgentValidationSummary } from "../types/agent";
 
@@ -39,15 +40,15 @@ const continuityFor = (events: AgentEvent[]) => {
   return items.join("\n").replace(/(api[_-]?key|secret|password|token)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").slice(0, 3_600);
 };
 interface AIStoreState {
-  roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; continuationTaskId: string | null; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; agentTasks: AgentTaskPublic[]; agentValidations: Record<string, AgentValidationSummary>; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
+  roomId: string | null; workspaceId: string | null; conversations: AIConversation[]; activeConversationId: string | null; providers: AIProviderDescriptor[]; settings: AISettings; action: AIAction; agentMode: AgentMode; draft: string; continuationTaskId: string | null; selection: AISelection | null; agentActivity: AgentEvent[]; agentPatches: AgentPatch[]; agentProposalEvents: AgentProposalEvent[]; agentTasks: AgentTaskPublic[]; agentValidations: Record<string, AgentValidationSummary>; duplicateTask: AgentTaskPublic | null; allowDuplicateTask: boolean; loadingProviders: boolean; lifecycle: AILifecycleState; generating: boolean; error: string | null;
   initialize: (roomId: string, workspaceId: string) => Promise<void>; refreshProviders: () => Promise<void>;
-  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; setAgentProposalHistory: (events: AgentProposalEvent[]) => void; setAgentProposalState: (proposals: AgentProposalPublic[]) => void; receiveAgentTask: (event: AgentTaskEvent) => void; setAgentTaskHistory: (tasks: AgentTaskPublic[]) => void; recordAgentValidation: (taskId: string | undefined, validation: AgentValidationSummary) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
+  setAction: (action: AIAction) => void; setAgentMode: (mode: AgentMode) => void; setDraft: (draft: string) => void; setSelection: (selection: AISelection | null) => void; setSettings: (settings: Partial<AISettings>) => void; setAllowDuplicateTask: (allow: boolean) => void; clearDuplicateTask: () => void; clearAgentActivity: () => void; receiveAgentProposalEvent: (event: AgentProposalEvent) => void; setAgentProposalHistory: (events: AgentProposalEvent[]) => void; setAgentProposalState: (proposals: AgentProposalPublic[]) => void; receiveAgentTask: (event: AgentTaskEvent) => void; setAgentTaskHistory: (tasks: AgentTaskPublic[]) => void; recordAgentValidation: (taskId: string | undefined, validation: AgentValidationSummary) => void; markAgentPatchesStale: (version: number) => void; markAgentPatchStatus: (patchId: string, status: AgentProposalStatus) => void;
   newConversation: () => void; selectConversation: (id: string) => void; deleteConversation: (id: string) => void; clearConversation: () => void; send: (context: AIRequestContext) => Promise<void>; retryLast: (context: AIRequestContext) => Promise<void>; continueTask: (context: AIRequestContext) => Promise<void>; cancelGeneration: () => void; clearRuntime: () => void;
 }
 
 const persisted = typeof window === "undefined" ? { conversations: [], settings: defaultSettings } : readPersisted();
 export const useAIStore = create<AIStoreState>((set, get) => ({
-  roomId: null, workspaceId: null, conversations: persisted.conversations, activeConversationId: null, providers: [], settings: persisted.settings, action: "explain", agentMode: "ASK", draft: "", continuationTaskId: null, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, loadingProviders: false, lifecycle: "idle", generating: false, error: null,
+  roomId: null, workspaceId: null, conversations: persisted.conversations, activeConversationId: null, providers: [], settings: persisted.settings, action: "explain", agentMode: "ASK", draft: "", continuationTaskId: null, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, duplicateTask: null, allowDuplicateTask: false, loadingProviders: false, lifecycle: "idle", generating: false, error: null,
   refreshProviders: async () => {
     set({ loadingProviders: true });
     try {
@@ -66,10 +67,10 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     get().cancelGeneration(); const current = get();
     const matching = current.conversations.filter((conversation) => conversation.roomId === roomId && conversation.workspaceId === workspaceId).sort((left, right) => right.updatedAt - left.updatedAt);
     const active = matching[0] ?? createConversation(roomId, workspaceId); const conversations = matching.length ? current.conversations : [...current.conversations, active];
-    set({ roomId, workspaceId, conversations, activeConversationId: active.id, continuationTaskId: null, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, error: null, lifecycle: "idle" }); savePersisted(conversations, current.settings);
+    set({ roomId, workspaceId, conversations, activeConversationId: active.id, continuationTaskId: null, selection: null, agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, duplicateTask: null, allowDuplicateTask: false, error: null, lifecycle: "idle" }); savePersisted(conversations, current.settings);
     await get().refreshProviders();
   },
-  setAction: (action) => set({ action }), setAgentMode: (agentMode) => set({ agentMode }), setDraft: (draft) => set({ draft }), setSelection: (selection) => set({ selection }),
+  setAction: (action) => set({ action }), setAgentMode: (agentMode) => set({ agentMode }), setDraft: (draft) => set({ draft }), setSelection: (selection) => set({ selection }), setAllowDuplicateTask: (allowDuplicateTask) => set({ allowDuplicateTask }), clearDuplicateTask: () => set({ duplicateTask: null }),
   setSettings: (settings) => set((state) => { const next = { ...state.settings, ...settings }; savePersisted(state.conversations, next); return { settings: next }; }),
   clearAgentActivity: () => set({ agentActivity: [], agentPatches: [], agentProposalEvents: [] }),
   receiveAgentProposalEvent: (event) => set((state) => {
@@ -144,7 +145,8 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     const assistant: AIConversationMessage = { id: messageId(), role: "assistant", content: "", createdAt: Date.now(), provider: state.settings.provider, model: state.settings.model, action: state.action };
     const conversations = updateConversation(state.conversations, conversation.id, (entry) => ({ ...entry, title: entry.messages.length ? entry.title : titleFor(state.action, userMessage.content), updatedAt: Date.now(), messages: [...entry.messages, userMessage, assistant] }));
     const controller = new AbortController(); activeController = controller; activeRequestId = assistant.id; activeCancelContext = { roomId: context.roomId, guestToken: context.guestToken };
-    set({ conversations, generating: true, lifecycle: "preparing-context", error: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [] }); savePersisted(conversations, state.settings);
+    const allowDuplicateTask = state.allowDuplicateTask;
+    set({ conversations, generating: true, lifecycle: "preparing-context", error: null, draft: "", duplicateTask: null, allowDuplicateTask: false, agentActivity: [], agentPatches: [], agentProposalEvents: [] }); savePersisted(conversations, state.settings);
     const isCurrent = () => activeRequestId === assistant.id && get().roomId === context.roomId && get().workspaceId === context.workspaceId && get().activeConversationId === conversation.id;
     const setAssistantContent = (content: string) => { if (!isCurrent()) return; set((latest) => ({ conversations: updateConversation(latest.conversations, conversation.id, (entry) => ({ ...entry, updatedAt: Date.now(), messages: entry.messages.map((message) => message.id === assistant.id ? { ...message, content } : message) })) })); };
     const handleAgentEvent = (event: AgentEvent) => {
@@ -160,7 +162,7 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
     };
     try {
       const history = conversation.messages.filter((message): message is AIConversationMessage & { role: "user" | "assistant" } => message.role === "user" || message.role === "assistant").slice(-8).map((message) => ({ role: message.role, content: message.content }));
-      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, intent: state.action, prompt: userMessage.content, taskId: assistant.id, ...(state.continuationTaskId ? { continuationTaskId: state.continuationTaskId } : {}), conversationId: conversation.id, continuitySummary: continuityFor(state.agentActivity), currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
+      const request = { roomId: context.roomId, guestToken: context.guestToken, workspaceId: context.workspaceId, mode: state.agentMode, intent: state.action, prompt: userMessage.content, taskId: assistant.id, allowDuplicateTask, ...(state.continuationTaskId ? { continuationTaskId: state.continuationTaskId } : {}), conversationId: conversation.id, continuitySummary: continuityFor(state.agentActivity), currentFileId: context.currentFileId, selectedCode: state.selection?.code, selectedCodeFileId: state.selection?.fileId, selectionStartOffset: state.selection?.startOffset, selectionEndOffset: state.selection?.endOffset, conversation: history, settings: state.settings, execution: context.execution, diagnostics: context.diagnostics };
       set({ lifecycle: "connecting" });
       if (state.settings.streaming && provider.supportsStreaming) {
         set({ lifecycle: "streaming" });
@@ -174,10 +176,12 @@ export const useAIStore = create<AIStoreState>((set, get) => ({
       if (!isCurrent()) return;
       activeController = null; activeRequestId = null; activeCancelContext = null; const message = error instanceof Error ? error.message : "AI request failed.";
       const latest = get(); const failed = updateConversation(latest.conversations, conversation.id, (entry) => ({ ...entry, updatedAt: Date.now(), messages: [...entry.messages, { id: messageId(), role: "error", content: message, createdAt: Date.now(), action: state.action }] }));
-      set({ conversations: failed, generating: false, continuationTaskId: null, lifecycle: "failed", error: message }); savePersisted(failed, latest.settings);
+      const duplicateCandidate = error instanceof ApiRequestError && error.code === "SIMILAR_TASK" ? error.details?.existingTask : null;
+      const duplicateTask = duplicateCandidate && typeof duplicateCandidate === "object" ? parseAgentTaskEvent({ type: "task_updated", task: duplicateCandidate }, context.roomId)?.task ?? null : null;
+      set({ conversations: failed, generating: false, continuationTaskId: null, lifecycle: "failed", error: message, duplicateTask }); savePersisted(failed, latest.settings);
     }
   },
   retryLast: async (context) => { const state = get(); const conversation = state.conversations.find((entry) => entry.id === state.activeConversationId); const lastUser = [...(conversation?.messages ?? [])].reverse().find((message) => message.role === "user"); if (!lastUser) return; set({ draft: lastUser.content, action: lastUser.action ?? "custom" }); await get().send(context); },
   continueTask: async (context) => { const state = get(); const task = state.agentTasks.find((entry) => entry.roomId === context.roomId && ["waiting_for_approval", "conflict", "failed", "timed_out"].includes(entry.status)); if (!task || state.generating) return; set({ draft: "Continue the previous coding task using the current room state.", continuationTaskId: task.taskId, action: task.intent, agentMode: task.mode, error: null }); await get().send(context); },
-  clearRuntime: () => { get().cancelGeneration(); set({ roomId: null, workspaceId: null, activeConversationId: null, continuationTaskId: null, selection: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, generating: false, lifecycle: "idle", error: null }); }
+  clearRuntime: () => { get().cancelGeneration(); set({ roomId: null, workspaceId: null, activeConversationId: null, continuationTaskId: null, selection: null, draft: "", agentActivity: [], agentPatches: [], agentProposalEvents: [], agentTasks: [], agentValidations: {}, duplicateTask: null, allowDuplicateTask: false, generating: false, lifecycle: "idle", error: null }); }
 }));

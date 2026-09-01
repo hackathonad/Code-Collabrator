@@ -1,5 +1,5 @@
 ﻿import { create } from "zustand";
-import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession, WorkspaceState } from "../types/collaboration";
+import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomActivityEntry, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession, WorkspaceState } from "../types/collaboration";
 import { storage } from "../lib/storage";
 
 const upsertTypingParticipant = (participants: TypingParticipant[], participant: TypingParticipant, isTyping: boolean) => {
@@ -39,6 +39,7 @@ interface RoomStoreState {
   error: string | null;
   chatTypingUsers: TypingParticipant[];
   editorTypingUsers: TypingParticipant[];
+  activity: RoomActivityEntry[];
   setSession: (session: UserSession | null) => void;
   setRoom: (room: RoomSnapshot | null) => void;
   setConnectionStatus: (status: RoomStoreState["connectionStatus"]) => void;
@@ -55,6 +56,8 @@ interface RoomStoreState {
   setChatTypingState: (participant: TypingParticipant, isTyping: boolean) => void;
   setEditorTypingState: (participant: TypingParticipant, isTyping: boolean) => void;
   clearTypingUsers: () => void;
+  setActivity: (entries: RoomActivityEntry[]) => void;
+  appendActivity: (entry: RoomActivityEntry) => void;
 }
 
 export const useRoomStore = create<RoomStoreState>((set) => ({
@@ -64,6 +67,7 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
   error: null,
   chatTypingUsers: [],
   editorTypingUsers: [],
+  activity: [],
   setSession: (session) => set({ session }),
   setRoom: (room) => set((state) => {
     if (room && state.room && state.room.roomId === room.roomId && room.version < state.room.version) return state;
@@ -71,7 +75,8 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
     return {
       room,
       chatTypingUsers: [],
-      editorTypingUsers: []
+      editorTypingUsers: [],
+      activity: room?.activity ?? []
     };
   }),
   setConnectionStatus: (connectionStatus) => set({ connectionStatus }),
@@ -212,5 +217,7 @@ export const useRoomStore = create<RoomStoreState>((set) => ({
     set({
       chatTypingUsers: [],
       editorTypingUsers: []
-    })
+    }),
+  setActivity: (activity) => set({ activity: [...activity].sort((left, right) => right.createdAt - left.createdAt).slice(0, 60) }),
+  appendActivity: (entry) => set((state) => ({ activity: [entry, ...state.activity.filter((current) => current.id !== entry.id)].slice(0, 60) }))
 }));

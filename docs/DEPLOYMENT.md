@@ -120,6 +120,14 @@ Execution status can be included in the existing AI request context when a real 
 6. Delete as the owner and confirm all clients leave, Quick Rejoin removes the room, and GET/JOIN return 404.
 7. If GitHub is configured, connect from Source control, import a test repository, edit a file with a second guest, verify status/diff, stage and prepare a commit, push explicitly, pull a remote change, and create a test pull request. Verify that unsaved local changes block pull/branch switch and that no token appears in browser storage or API responses.
 
+## Collaboration and AI teammate verification
+
+The room UI is deliberately split into small, predictable surfaces. Open Chat and confirm that only the room thread is shown. Close it, open Join call, and confirm that only the call join/participant controls are shown. Open the floating AI button and confirm that it opens a chat-style assistant popup; provider setup and shared task details remain secondary controls. Open People and Activity from the top of the right-side panel and confirm that active files, task status, patch review, and validation events stay within the current room.
+
+In a two-guest test, edit different files, send chat, create one AI task, add a task note, and ask the second guest to repeat the same request. The second request should show the existing-task choice. An Edit or Debug response must remain a proposal until a guest explicitly applies it; change the file from the other guest first and verify that the proposal becomes stale without overwriting the collaborator's content. Verify that activity messages contain no tokens or provider credentials.
+
+The Deploy activity item is intentionally truthful until a hosting provider integration exists. It shows a safe notification and supports copying the room link or downloading the current source; it does not deploy or claim that Vercel/Render changed. A future deployment integration needs provider authorization, deployment records, logs, rollback, and audit controls before it is enabled.
+
 After any source or Vercel-variable change, trigger a new **Production** deployment. A previously deployed Vercel build does not change when environment variables are edited. The landing page must be guest-first (display-name field and Create/Join Room controls); a deployed page showing Sign in/Sign up is an obsolete build and must be rebuilt from the current repository.
 
 ## Troubleshooting

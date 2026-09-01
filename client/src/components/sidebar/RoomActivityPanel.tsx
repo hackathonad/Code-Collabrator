@@ -1,8 +1,9 @@
-import { Activity, Clock3, FilePenLine } from "lucide-react";
-import type { HistoryEntry, Participant } from "../../types/collaboration";
+import { Activity, Bot, Clock3, FilePenLine, GitBranch, Users } from "lucide-react";
+import type { HistoryEntry, Participant, RoomActivityEntry } from "../../types/collaboration";
 
 interface RoomActivityPanelProps {
   history: HistoryEntry[];
+  activity: RoomActivityEntry[];
   participants: Participant[];
 }
 
@@ -23,9 +24,10 @@ const relativeTime = (timestamp: number) => {
   return new Date(timestamp).toLocaleDateString();
 };
 
-export const RoomActivityPanel = ({ history, participants }: RoomActivityPanelProps) => {
-  const entries = history.slice(0, 16);
+export const RoomActivityPanel = ({ history, activity, participants }: RoomActivityPanelProps) => {
+  const entries = activity.length ? activity.slice(0, 24) : history.slice(0, 16).map((entry) => ({ id: entry.id, roomId: "", actorId: entry.createdByUserId, actorName: entry.createdByUsername, kind: "file" as const, message: reasonLabel[entry.reason], createdAt: entry.createdAt, fileId: entry.fileId }));
   const activePeople = participants.filter((participant) => participant.isOnline);
+  const iconFor = (kind: RoomActivityEntry["kind"]) => kind === "agent" || kind === "patch" || kind === "validation" ? Bot : kind === "presence" ? Users : kind === "git" ? GitBranch : FilePenLine;
 
   return (
     <aside className="chat-panel-shell flex h-full min-h-0 w-full flex-col border-l border-[var(--border)] bg-[var(--glass)] backdrop-blur-xl" aria-label="Room activity">
@@ -38,7 +40,7 @@ export const RoomActivityPanel = ({ history, participants }: RoomActivityPanelPr
           <p className="text-xs font-medium text-[var(--text-primary)]">{activePeople.length} collaborator{activePeople.length === 1 ? "" : "s"} online</p>
           <p className="mt-1 text-xs text-[var(--text-muted)]">Presence, edits, and room history update in real time.</p>
         </div>
-        {entries.length ? <ol className="space-y-3">{entries.map((entry) => <li key={entry.id} className="flex gap-2.5"><div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--badge-bg)]"><FilePenLine className="h-3.5 w-3.5 text-[var(--accent)]" /></div><div className="min-w-0 flex-1"><p className="text-xs leading-5 text-[var(--text-secondary)]"><span className="font-medium text-[var(--text-primary)]">{entry.createdByUsername}</span> {reasonLabel[entry.reason]}</p><p className="mt-0.5 flex items-center gap-1 text-[10px] text-[var(--text-faint)]"><Clock3 className="h-3 w-3" />{relativeTime(entry.createdAt)}</p></div></li>)}</ol> : <div className="flex min-h-[150px] flex-col items-center justify-center text-center"><Activity className="h-6 w-6 text-[var(--accent)]" /><p className="mt-3 text-sm text-[var(--text-muted)]">Room activity will appear here.</p></div>}
+        {entries.length ? <ol className="space-y-3">{entries.map((entry) => { const EntryIcon = iconFor(entry.kind); return <li key={entry.id} className="flex gap-2.5"><div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--badge-bg)]"><EntryIcon className="h-3.5 w-3.5 text-[var(--accent)]" /></div><div className="min-w-0 flex-1"><p className="text-xs leading-5 text-[var(--text-secondary)]"><span className="font-medium text-[var(--text-primary)]">{entry.actorName}</span> {entry.message}</p><p className="mt-0.5 flex items-center gap-1 text-[10px] text-[var(--text-faint)]"><Clock3 className="h-3 w-3" />{relativeTime(entry.createdAt)}</p></div></li>; })}</ol> : <div className="flex min-h-[150px] flex-col items-center justify-center text-center"><Activity className="h-6 w-6 text-[var(--accent)]" /><p className="mt-3 text-sm text-[var(--text-muted)]">Room activity will appear here.</p><p className="mt-1 text-[11px] text-[var(--text-faint)]">Join, file, AI, and validation updates will appear as the team works.</p></div>}
       </div>
     </aside>
   );

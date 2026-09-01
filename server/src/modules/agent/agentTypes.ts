@@ -69,6 +69,7 @@ export interface AgentRequest {
   conversationId?: string;
   continuitySummary?: string;
   initiatorLabel?: string;
+  allowDuplicateTask?: boolean;
   mode: AgentMode;
   language: SupportedLanguage;
   settings: AISettings;
@@ -163,6 +164,8 @@ export interface AgentTaskPublic {
   intent: AIAction;
   classification?: AgentTaskClassification;
   initiatorLabel?: string;
+  requestedBy?: string;
+  notes?: AgentTaskNote[];
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
@@ -171,6 +174,13 @@ export interface AgentTaskPublic {
   patchCount: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface AgentTaskNote {
+  id: string;
+  authorName: string;
+  message: string;
+  createdAt: number;
 }
 
 export interface AgentProposalPublic {
@@ -199,6 +209,7 @@ export interface AgentProposalEvent {
   path: string;
   baseVersion: number;
   currentVersion?: number;
+  changedBy?: string;
   additions: number;
   deletions: number;
 }

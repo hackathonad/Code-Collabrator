@@ -28,7 +28,7 @@ const statusDescription = (participant: Participant, typingUserIds: Set<string>)
   }
 
   if (participant.status === "active") {
-    return "Active in room";
+    return participant.activity ?? (participant.activeFileName ? `Working in ${participant.activeFileName}` : "Active in room");
   }
 
   return `Last active ${formatRelativeTime(participant.lastActiveAt)}`;
@@ -74,6 +74,7 @@ export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canC
           <p className="mt-0.5 text-xs text-[var(--text-muted)]">
             Line {participant.cursor.lineNumber}, col {participant.cursor.column}
           </p>
+          {participant.activeFileName ? <p className="mt-1 truncate text-[11px] text-[var(--accent)]" title={participant.activeFileName}>File · {participant.activeFileName}</p> : null}
           <p className="mt-0.5 text-xs text-[var(--text-faint)]">{statusDescription(participant, typingUserIds)}</p>
           {media ? <p className="mt-1 flex items-center gap-1.5 text-[10px] text-[var(--text-faint)]"><Phone className="h-3 w-3 text-[var(--accent)]" aria-label="In call" />In call {media.microphoneEnabled ? <Mic className="h-3 w-3" aria-label="Microphone on" /> : <MicOff className="h-3 w-3" aria-label="Microphone off" />}{media.cameraEnabled ? <Camera className="h-3 w-3" aria-label="Camera on" /> : null}{media.screenShareEnabled ? <MonitorUp className="h-3 w-3" aria-label="Screen sharing" /> : null}{media.isSpeaking ? <Volume2 className="h-3 w-3 text-emerald-300" aria-label="Speaking" /> : null}</p> : null}
         </div>

@@ -7,7 +7,8 @@ import { useMediaStore } from "../store/useMediaStore";
 import { useAIStore } from "../store/useAIStore";
 import { useGitStore } from "../store/useGitStore";
 import type { ChatMessage, CursorUpdate, HistoryEntry, Participant, RoomSnapshot, SupportedLanguage, TypingParticipant, UserSession } from "../types/collaboration";
-import type { AgentProposalEvent, AgentTaskEvent, AgentTaskPublic } from "../types/agent";
+import { parseAgentTaskEvent, parseRoomActivity, parseRoomActivityList } from "../lib/collaborationProtocol";
+import type { AgentProposalEvent } from "../types/agent";
 import type { GitStateEvent } from "../types/git";
 import type { ExecutionEvent, ExecutionRecord } from "../types/execution";
 import { useExecutionStore } from "../store/useExecutionStore";
@@ -46,7 +47,9 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     setEditorTypingState,
     clearTypingUsers,
     syncEditor,
-    syncWorkspace
+    syncWorkspace,
+    setActivity,
+    appendActivity
   } = useRoomStore();
 
   useEffect(() => {
@@ -115,6 +118,8 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
       });
 
       socket.on("room:participants", (participants: Participant[]) => replaceParticipants(participants));
+      socket.on("room:activity_history", (entries: unknown) => setActivity(parseRoomActivityList(entries).filter((entry) => entry.roomId === roomId)));
+      socket.on("room:activity", (entry: unknown) => { const parsed = parseRoomActivity(entry); if (parsed?.roomId === roomId) appendActivity(parsed); });
       socket.on("presence:update", (participant: Participant) => upsertParticipant(participant));
       socket.on("cursor-update", (cursor: CursorUpdate) => updateParticipantCursor(cursor));
       socket.on("history:update", (history: HistoryEntry[]) => setHistory(history));
@@ -144,11 +149,15 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
         if (!event || event.roomId !== roomId) return;
         useAIStore.getState().receiveAgentProposalEvent(event);
       });
-      socket.on("agent:task", (event: AgentTaskEvent) => {
-        if (!event?.task || event.task.roomId !== roomId) return;
-        useAIStore.getState().receiveAgentTask(event);
+      socket.on("agent:task", (event: unknown) => {
+        const parsed = parseAgentTaskEvent(event, roomId);
+        if (parsed) useAIStore.getState().receiveAgentTask(parsed);
       });
-      socket.on("agent:task_history", (tasks: AgentTaskPublic[]) => useAIStore.getState().setAgentTaskHistory(tasks));
+      socket.on("agent:task_history", (tasks: unknown) => {
+        if (!Array.isArray(tasks)) return;
+        const parsed = tasks.flatMap((task) => { const event = parseAgentTaskEvent({ type: "task_updated", task }, roomId); return event ? [event.task] : []; });
+        useAIStore.getState().setAgentTaskHistory(parsed);
+      });
       socket.on("agent:proposal_history", (events: AgentProposalEvent[]) => useAIStore.getState().setAgentProposalHistory(events));
       socket.on("agent:proposal_state", (proposals: import("../types/agent").AgentProposalPublic[]) => useAIStore.getState().setAgentProposalState(proposals));
       socket.on("execution:history", (records: ExecutionRecord[]) => {
@@ -201,7 +210,9 @@ export const useRoomSocket = (roomId: string, session: UserSession | null) => {
     setChatTypingState,
     setEditorTypingState,
     updateParticipantCursor,
-    upsertParticipant
+    upsertParticipant,
+    setActivity,
+    appendActivity
   ]);
 
   return socketRef;

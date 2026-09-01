@@ -1,6 +1,6 @@
 import { CheckCircle2, Download, Link2, Rocket, ShieldCheck } from "lucide-react";
 
-export const DeployPanel = ({ onCopyRoomLink, onDownloadFile }: { onCopyRoomLink: () => void; onDownloadFile: () => void }) => {
+export const DeployPanel = ({ onCopyRoomLink, onDownloadFile, onNotify }: { onCopyRoomLink: () => void; onDownloadFile: () => void; onNotify: (message: string) => void }) => {
   return (
     <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
       <div className="flex items-center gap-3 px-3">
@@ -14,6 +14,7 @@ export const DeployPanel = ({ onCopyRoomLink, onDownloadFile }: { onCopyRoomLink
         </div>
 
         <div className="mt-3 grid gap-2">
+          <button type="button" onClick={() => onNotify("No hosting provider is connected yet. Connect a repository or export the source to deploy.")} className="theme-button-primary inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium"><Rocket className="h-3.5 w-3.5" />Deploy this workspace</button>
           <button type="button" onClick={onCopyRoomLink} className="theme-button-primary inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-xs font-medium"><Link2 className="h-3.5 w-3.5" />Copy workspace link</button>
           <button type="button" onClick={onDownloadFile} className="theme-button-neutral inline-flex items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-medium"><Download className="h-3.5 w-3.5" />Download current source</button>
         </div>

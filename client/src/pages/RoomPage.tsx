@@ -52,7 +52,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostic[]>([]);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const editorAIActionsRef = useRef<{ insertAtCursor: (code: string) => boolean; replaceSelection: (selection: { fileId: string; code: string; startOffset: number; endOffset: number }, code: string) => boolean; replaceFile: (code: string) => boolean; revealLocation: (fileId: string, line: number, column: number) => boolean } | null>(null);
-  const { room, session, connectionStatus, error, chatTypingUsers, editorTypingUsers, setRoom, setSession, setError } =
+  const { room, session, connectionStatus, error, chatTypingUsers, editorTypingUsers, activity: roomActivity, setRoom, setSession, setError } =
     useRoomStore();
   const { toasts, pushToast, dismissToast } = useToast();
   const { setThemeId, themeId } = useTheme();
@@ -85,6 +85,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
     setActivity(next);
     if (next === "explorer" || next === "search" || next === "source-control" || next === "deploy") setMobileWorkspaceOpen(true);
     else setMobileWorkspaceOpen(false);
+    if (next === "deploy") pushToast("Deploy is ready for a connected hosting provider or an exported workspace.");
     if (next !== "ai" && activePanel === "ai") setActivePanel(null);
     if (next === "ai") {
       if (activePanel === "ai") setActivePanel(null);
@@ -648,6 +649,8 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
           <button type="button" onClick={() => selectActivity("explorer")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "explorer" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Explorer</button>
           <button type="button" onClick={() => selectActivity("search")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "search" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Search</button>
           <button type="button" onClick={() => selectActivity("source-control")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "source-control" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Source control</button>
+          <button type="button" onClick={() => selectActivity("run")} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Run &amp; debug</button>
+          <button type="button" onClick={() => selectActivity("deploy")} className={`shrink-0 rounded px-3 py-1.5 text-xs ${activity === "deploy" && mobileWorkspaceOpen ? "bg-[var(--badge-bg)] text-[var(--text-primary)]" : "text-[var(--text-muted)]"}`}>Deploy</button>
           <button type="button" onClick={() => { setMobileWorkspaceOpen(false); showPanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
         </nav>
 
@@ -700,8 +703,13 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
               roomId={room.roomId}
               socketRef={socketRef}
               onClose={() => setActivePanel(null)}
+              onAskAI={(message, asTask) => {
+                setAIAction(asTask ? "generate" : "custom");
+                setAIDraft(asTask ? `Turn this collaborator request into a shared AI task and investigate it: “${message}”` : `Answer this collaborator question using the current shared workspace: “${message}”`);
+                showPanel("ai");
+              }}
             />
-          ) : activePanel === "people" ? <ParticipantsPanel participants={room.participants} editorTypingUsers={editorTypingUsers} session={session} ownerId={room.ownerId} roomId={room.roomId} socketRef={socketRef} onNotify={pushToast} /> : <RoomActivityPanel history={room.history} participants={room.participants} />}
+          ) : activePanel === "people" ? <ParticipantsPanel participants={room.participants} editorTypingUsers={editorTypingUsers} session={session} ownerId={room.ownerId} roomId={room.roomId} socketRef={socketRef} onNotify={pushToast} /> : <RoomActivityPanel history={room.history} activity={roomActivity} participants={room.participants} />}
             </div>
           </aside> : null
           }

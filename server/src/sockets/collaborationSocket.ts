@@ -1,5 +1,6 @@
 import type { Server, Socket } from "socket.io";
 import { roomStore } from "../modules/rooms/roomStore";
+import { subscribeRoomActivity } from "../modules/rooms/roomStore";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
@@ -300,20 +301,41 @@ export const registerCollaborationSocket = (io: Server) => {
 
   const unsubscribeAgentProposal = subscribeAgentProposal((event) => {
     io.to(event.roomId).emit("agent:proposal", event);
+    try {
+      const actorId = event.type === "proposal_created" ? "ai" : event.changedBy ?? event.userId;
+      const actorName = event.type === "proposal_created" ? "AI teammate" : undefined;
+      const action = event.type === "proposal_created" ? `prepared a patch for ${event.path}` : `${event.type.replace("proposal_", "")} the patch for ${event.path}`;
+      roomStore.recordActivity(event.roomId, actorId, "patch", action, { actorName, taskId: undefined, fileId: event.fileId });
+    } catch { /* The room may have been deleted before the proposal event arrived. */ }
   });
   agentSocketSubscriptions.add(unsubscribeAgentProposal);
   const unsubscribeAgentTasks = subscribeAgentTasks((event) => {
     io.to(event.task.roomId).emit("agent:task", event);
+    try {
+      const statusLabel: Record<string, string> = { queued: "queued", planning: "planning", running: "investigating", waiting_for_approval: "waiting for approval", applying: "applying a patch", validating: "running validation", completed: "completed", cancelled: "cancelled", failed: "failed", timed_out: "timed out", conflict: "hit a conflict" };
+      const message = event.type === "task_started" ? `started “${event.task.summary}”` : `${statusLabel[event.task.status] ?? event.task.status} “${event.task.summary}”`;
+      roomStore.recordActivity(event.task.roomId, "ai", "agent", `AI teammate ${message}`, { actorName: "AI teammate", taskId: event.task.taskId });
+    } catch { /* The room may have been deleted before the task event arrived. */ }
   });
   agentSocketSubscriptions.add(unsubscribeAgentTasks);
   const unsubscribeGitState = subscribeGitState((event) => {
     io.to(event.roomId).emit("git:state", event);
+    try { roomStore.recordActivity(event.roomId, "git", "git", `${event.operation} shared Git state`, { actorName: "Shared Git" }); } catch { /* Git activity is best effort. */ }
   });
   agentSocketSubscriptions.add(unsubscribeGitState);
   const unsubscribeExecution = subscribeExecution((event) => {
     io.to(event.record.roomId).emit("execution:state", event);
+    try {
+      const state = event.record.status === "queued" ? "queued" : event.record.status === "running" ? "started" : event.record.status;
+      roomStore.recordActivity(event.record.roomId, event.record.ownerId, "validation", `${event.record.action} ${state}`, { fileId: undefined });
+    } catch { /* Validation activity is best effort. */ }
   });
   agentSocketSubscriptions.add(unsubscribeExecution);
+  const unsubscribeRoomActivity = subscribeRoomActivity((entry) => {
+    io.to(entry.roomId).emit("room:activity", entry);
+    try { void roomPersistence.saveRoom(roomStore.getRoomSnapshot(entry.roomId)); } catch { /* The room may have been deleted between the event and persistence. */ }
+  });
+  agentSocketSubscriptions.add(unsubscribeRoomActivity);
 
 
   const checkRateLimit = (socket: Socket) => {
@@ -530,6 +552,7 @@ export const registerCollaborationSocket = (io: Server) => {
         socket.join(payload.roomId);
         socketRoomBindings.set(socket.id, payload);
         socket.emit("room:snapshot", snapshot);
+        socket.emit("room:activity_history", snapshot.activity);
         socket.emit("agent:task_history", getPublicAgentTaskHistory(payload.roomId));
         socket.emit("agent:proposal_history", getPublicAgentProposalHistory(payload.roomId));
         socket.emit("agent:proposal_state", getPublicAgentProposalState(payload.roomId));

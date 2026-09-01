@@ -1,4 +1,4 @@
-import { PanelRightClose, Send } from "lucide-react";
+import { PanelRightClose, Send, Users } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import { ChatMessage } from "../ui/ChatMessage";
@@ -12,9 +12,10 @@ interface ChatPanelProps {
   roomId: string;
   socketRef: MutableRefObject<Socket | null>;
   onClose: () => void;
+  onAskAI?: (message: string, asTask: boolean) => void;
 }
 
-export const ChatPanel = ({ messages, participants, typingUsers, session, roomId, socketRef, onClose }: ChatPanelProps) => {
+export const ChatPanel = ({ messages, participants, typingUsers, session, roomId, socketRef, onClose, onAskAI }: ChatPanelProps) => {
   const [message, setMessage] = useState("");
   const [typingListOpen, setTypingListOpen] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -27,6 +28,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
     () => typingUsers.filter((participant) => participant.userId !== session.userId),
     [typingUsers, session.userId]
   );
+  const onlineCount = participants.filter((participant) => participant.isOnline).length;
   const typingSummary = visibleTypingUsers.length === 1 ? "1 person typing…" : `${visibleTypingUsers.length} people typing…`;
 
   useEffect(() => {
@@ -84,7 +86,7 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--border)] px-3 py-2.5">
         <div className="min-w-0">
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Chat</p>
-          <p className="truncate font-display text-sm font-semibold text-[var(--text-primary)]">Room thread</p>
+          <p className="flex items-center gap-1.5 truncate font-display text-sm font-semibold text-[var(--text-primary)]"><span>Room thread</span><span className="inline-flex items-center gap-1 text-[10px] font-normal text-[var(--text-faint)]"><Users className="h-3 w-3" />{onlineCount} online</span></p>
         </div>
         <button
           type="button"
@@ -117,9 +119,10 @@ export const ChatPanel = ({ messages, participants, typingUsers, session, roomId
               const isCurrentUser = entry.userId === session.userId;
               const participant = participantLookup.get(entry.userId);
 
-              return (
-                <ChatMessage key={entry.id} message={entry} isSelf={isCurrentUser} participant={participant} />
-              );
+              return <div key={entry.id} className="group">
+                <ChatMessage message={entry} isSelf={isCurrentUser} participant={participant} />
+                {onAskAI ? <div className="mt-1 flex justify-end gap-1 opacity-0 transition group-hover:opacity-100 focus-within:opacity-100"><button type="button" onClick={() => onAskAI(entry.message, false)} className="rounded px-1.5 py-1 text-[10px] text-[var(--text-muted)] hover:bg-[var(--badge-bg)] hover:text-[var(--text-primary)]">Ask AI</button><button type="button" onClick={() => onAskAI(entry.message, true)} className="rounded px-1.5 py-1 text-[10px] text-[var(--accent)] hover:bg-[var(--badge-bg)]">Turn into AI task</button></div> : null}
+              </div>;
             })}
             {visibleTypingUsers.length ? (
               <div className="theme-surface chat-typing rounded-xl border px-3 py-2 text-xs text-[var(--text-muted)]">

@@ -92,6 +92,8 @@ export interface AgentTaskPublic {
   intent: AIAction;
   classification?: AgentTaskClassification;
   initiatorLabel?: string;
+  requestedBy?: string;
+  notes?: AgentTaskNote[];
   summary: string;
   status: AgentTaskStatus;
   patchStatus: "none" | "proposed" | "applied" | "stale" | "rejected";
@@ -100,6 +102,13 @@ export interface AgentTaskPublic {
   patchCount: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface AgentTaskNote {
+  id: string;
+  authorName: string;
+  message: string;
+  createdAt: number;
 }
 
 export interface AgentTaskEvent {
@@ -133,6 +142,7 @@ export interface AgentProposalEvent {
   path: string;
   baseVersion: number;
   currentVersion?: number;
+  changedBy?: string;
   additions: number;
   deletions: number;
 }
@@ -170,6 +180,7 @@ export interface AgentRequestPayload {
   continuationTaskId?: string;
   conversationId?: string;
   continuitySummary?: string;
+  allowDuplicateTask?: boolean;
   conversation: Array<{ role: "user" | "assistant"; content: string }>;
   settings: AISettings;
   execution?: { output: string; failed: boolean };

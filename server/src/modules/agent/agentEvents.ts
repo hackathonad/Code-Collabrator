@@ -30,7 +30,7 @@ const proposalTransitions: Record<StoredProposal["status"], StoredProposal["stat
   proposal_applied: []
 };
 
-const proposalEvent = (type: AgentProposalEvent["type"], stored: StoredProposal, currentVersion?: number): AgentProposalEvent => ({
+const proposalEvent = (type: AgentProposalEvent["type"], stored: StoredProposal, currentVersion?: number, changedBy?: string): AgentProposalEvent => ({
   type,
   roomId: stored.patch.roomId,
   userId: stored.userId,
@@ -39,6 +39,7 @@ const proposalEvent = (type: AgentProposalEvent["type"], stored: StoredProposal,
   path: stored.patch.path,
   baseVersion: stored.patch.baseVersion,
   ...(currentVersion === undefined ? {} : { currentVersion }),
+  ...(changedBy ? { changedBy: changedBy.slice(0, 128) } : {}),
   additions: stored.patch.additions,
   deletions: stored.patch.deletions
 });
@@ -106,7 +107,7 @@ export const clearAgentProposals = (roomId: string) => {
   for (const [patchId, stored] of proposals) if (stored.patch.roomId === roomId) proposals.delete(patchId);
 };
 
-export const updateAgentProposal = (patchId: string, type: Exclude<AgentProposalEvent["type"], "proposal_created">, currentVersion?: number) => {
+export const updateAgentProposal = (patchId: string, type: Exclude<AgentProposalEvent["type"], "proposal_created">, currentVersion?: number, changedBy?: string) => {
   const stored = proposals.get(patchId);
   if (!stored) return null;
   if (stored.status === type) return null;
@@ -114,7 +115,7 @@ export const updateAgentProposal = (patchId: string, type: Exclude<AgentProposal
   stored.status = type;
   recordAgentMemory(stored.patch.roomId, "patchDecisions", `Patch ${type.replace("proposal_", "")}: ${stored.patch.path}`, stored.patch.taskId);
   logSafeEvent("agent", type, { roomId: stored.patch.roomId, patchId, path: stored.patch.path, currentVersion });
-  const event = proposalEvent(type, stored, currentVersion);
+  const event = proposalEvent(type, stored, currentVersion, changedBy);
   emitAgentProposal(event);
   return event;
 };

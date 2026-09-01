@@ -184,6 +184,7 @@ The room page keeps the top toolbar compact and places development controls in t
 
 - [Production deployment architecture, Vercel, backend, and Render](docs/DEPLOYMENT.md)
 - [Environment variable reference](docs/ENVIRONMENT.md)
+- [Senior architecture and product review](docs/ARCHITECTURE_REVIEW.md)
 - [Production launch checklist](docs/LAUNCH_CHECKLIST.md)
 - [Realtime load-test plan](docs/LOAD_TESTING.md)
 - [Security policy](SECURITY.md)
@@ -202,3 +203,13 @@ The room UI keeps the top toolbar focused on project/room state and communicatio
 Agent work is presented as human-readable progress: understanding context, inspecting relevant files, preparing a proposal, waiting for approval, and validating. Technical activity is available in an expandable detail section. Edit, Debug, refactor, test, and review flows never silently write files. A proposal shows affected files and line changes, then requires an explicit Apply or Reject action. If a collaborator changes a file first, the proposal becomes stale and offers Regenerate or Review current file without overwriting anyone's work.
 
 Provider output is untrusted structured data. The server validates action, tool, patch, plan, diagnosis, and review schemas; deterministic JSON extraction is allowed only when safe. Malformed output is retried once with a stronger format instruction and then becomes a clear failure with no tool call or file change. Streaming agent events are validated again in the browser. Provider credentials remain on the backend, the selected provider is never silently changed, and the database-only guest architecture remains unchanged.
+
+## Improvement Batch 2 collaboration model
+
+The room now has one shared collaboration model for people and the AI teammate. Presence includes the active file and a short activity label; a bounded room activity timeline covers joins, file work, chat, AI tasks, patch review, validation, Git, and reconnect-visible handoff events. Activity is redacted and stored in the existing room snapshot JSON when Supabase persistence is enabled, so no new database migration is required for this batch.
+
+The assistant remains chat-first. A natural-language request is routed to Ask, Edit, Debug, or Explain behavior, while shared tasks expose a requester label, bounded notes, lifecycle status, patch count, and validation state. Similar active requests return a safe duplicate-task warning with an explicit choice to view the existing task or start another. Chat messages can be sent to the assistant or turned into an explicit shared task, but neither action runs silently.
+
+The right-side surfaces are intentionally separated: Chat shows only the room thread, Join call opens only the voice/video surface, People shows collaborator presence and role controls, Activity shows the shared timeline, and the floating assistant button opens the AI chat popup. Deploy is currently an honest export/provider-status surface; it does not claim to deploy to Vercel or Render.
+
+The requested frontend/backend organization is already present in the repository: `client/` is the Vercel frontend and `server/` is the Render backend. See the [senior architecture and product review](docs/ARCHITECTURE_REVIEW.md) for the feature audit, what is intentionally not needed, and the recommended next milestones.
