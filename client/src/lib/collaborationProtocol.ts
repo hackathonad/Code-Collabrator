@@ -52,6 +52,16 @@ const parseTask = (value: unknown, roomId: string): AgentTaskPublic | null => {
     const entry = note as Record<string, unknown>;
     return typeof entry.id === "string" && typeof entry.authorName === "string" && typeof entry.message === "string" && typeof entry.createdAt === "number" ? [{ id: entry.id.slice(0, 128), authorName: entry.authorName.slice(0, 80), message: entry.message.slice(0, 280), createdAt: entry.createdAt }] : [];
   }) : undefined;
+  const priority = raw.priority === "urgent" || raw.priority === "high" || raw.priority === "normal" ? raw.priority : "normal";
+  const assignedTo = raw.assignedTo && typeof raw.assignedTo === "object" && !Array.isArray(raw.assignedTo)
+    ? (() => { const value = raw.assignedTo as Record<string, unknown>; return typeof value.userId === "string" && typeof value.displayName === "string" ? { userId: value.userId.slice(0, 128), displayName: value.displayName.slice(0, 80) } : undefined; })()
+    : undefined;
+  const watchers = Array.isArray(raw.watchers) ? raw.watchers.slice(-20).flatMap((watcher): Array<{ userId: string; displayName: string }> => {
+    if (!watcher || typeof watcher !== "object" || Array.isArray(watcher)) return [];
+    const value = watcher as Record<string, unknown>;
+    return typeof value.userId === "string" && typeof value.displayName === "string" ? [{ userId: value.userId.slice(0, 128), displayName: value.displayName.slice(0, 80) }] : [];
+  }) : [];
+  const files = Array.isArray(raw.files) ? raw.files.filter((file): file is string => typeof file === "string").slice(0, 10).map((file) => file.slice(0, 260)) : [];
   if (!agentModes.has(String(raw.mode)) || !agentIntents.has(raw.intent as AIAction) || !validationStatuses.has(String(validationStatus))) return null;
   return {
     taskId,
@@ -62,6 +72,12 @@ const parseTask = (value: unknown, roomId: string): AgentTaskPublic | null => {
     ...(typeof raw.initiatorLabel === "string" ? { initiatorLabel: raw.initiatorLabel.slice(0, 80) } : {}),
     ...(typeof raw.requestedBy === "string" ? { requestedBy: raw.requestedBy.slice(0, 80) } : {}),
     ...(notes?.length ? { notes } : {}),
+    priority,
+    ...(assignedTo ? { assignedTo } : {}),
+    watchers,
+    ...(files.length ? { files } : {}),
+    ...(typeof raw.reviewCount === "number" && Number.isInteger(raw.reviewCount) && raw.reviewCount > 0 ? { reviewCount: Math.min(20, raw.reviewCount) } : {}),
+    ...(typeof raw.resultSummary === "string" && raw.resultSummary.trim() ? { resultSummary: raw.resultSummary.slice(0, 240) } : {}),
     summary,
     status,
     patchStatus: patchStatus as AgentTaskPublic["patchStatus"],

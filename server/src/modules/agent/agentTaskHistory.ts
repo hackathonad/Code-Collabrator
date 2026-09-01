@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentPatch, AgentRequest, AgentResult, AgentTaskNote, AgentTaskPublic, AgentTaskStatus, AgentValidationStatus } from "./agentTypes";
+import type { AgentPatch, AgentRequest, AgentResult, AgentTaskNote, AgentTaskPriority, AgentTaskPublic, AgentTaskStatus, AgentValidationStatus } from "./agentTypes";
 import { classifyTask } from "./agentIntelligence";
 import { logSafeEvent } from "../../utils/safeLogger";
 import { recordAgentMemory } from "./agentMemory";
@@ -11,7 +11,9 @@ interface AgentTaskRecord extends AgentTaskPublic {
   model: string;
 }
 
-type TaskUpdate = Partial<Pick<AgentTaskRecord, "status" | "patchStatus" | "validationStatus" | "validationSummary" | "patchCount">>;
+type TaskPerson = { userId: string; displayName: string };
+
+type TaskUpdate = Partial<Pick<AgentTaskRecord, "status" | "patchStatus" | "validationStatus" | "validationSummary" | "patchCount" | "priority" | "assignedTo" | "watchers" | "files" | "reviewCount" | "resultSummary">>;
 
 export interface AgentTaskEvent {
   type: "task_started" | "task_updated";
@@ -58,8 +60,14 @@ const publicTask = (task: AgentTaskRecord): AgentTaskPublic => ({
   intent: task.intent,
   ...(task.classification ? { classification: task.classification } : {}),
   ...(task.initiatorLabel ? { initiatorLabel: task.initiatorLabel } : {}),
-  ...(task.initiatorLabel ? { requestedBy: task.initiatorLabel } : {}),
+    ...(task.initiatorLabel ? { requestedBy: task.initiatorLabel } : {}),
   ...(task.notes?.length ? { notes: task.notes.map((note) => ({ ...note })) } : {}),
+  priority: task.priority,
+  ...(task.assignedTo ? { assignedTo: { ...task.assignedTo } } : {}),
+  watchers: task.watchers.map((watcher) => ({ ...watcher })),
+  ...(task.files?.length ? { files: [...task.files] } : {}),
+  ...(task.reviewCount ? { reviewCount: task.reviewCount } : {}),
+  ...(task.resultSummary ? { resultSummary: task.resultSummary } : {}),
   summary: task.summary,
   status: task.status,
   patchStatus: task.patchStatus,
@@ -115,6 +123,10 @@ export const startAgentTask = (request: AgentRequest) => {
     classification: classifyTask(request),
     ...(request.initiatorLabel ? { initiatorLabel: request.initiatorLabel.slice(0, 80) } : {}),
     notes: [],
+    priority: "normal",
+    watchers: [],
+    files: [],
+    reviewCount: 0,
     summary: safeSummary(request.userInstruction),
     provider: request.settings.provider,
     model: request.settings.model.slice(0, 160),
@@ -160,6 +172,29 @@ export const addAgentTaskNote = (taskId: string, roomId: string, userId: string,
   logSafeEvent("agent", "task_note", { taskId, roomId });
   emit("task_updated", task);
   return publicTask(task);
+};
+
+const updateTaskDetails = (taskId: string, roomId: string, update: TaskUpdate) => {
+  const task = getAgentTask(taskId, roomId);
+  if (!task) return null;
+  const changed = Object.entries(update).some(([key, value]) => JSON.stringify(task[key as keyof AgentTaskRecord]) !== JSON.stringify(value));
+  if (!changed) return publicTask(task);
+  Object.assign(task, update, { updatedAt: Date.now() });
+  emit("task_updated", task);
+  return publicTask(task);
+};
+
+export const setAgentTaskPriority = (taskId: string, roomId: string, priority: AgentTaskPriority) => updateTaskDetails(taskId, roomId, { priority });
+
+export const assignAgentTask = (taskId: string, roomId: string, assignedTo: TaskPerson | undefined) => updateTaskDetails(taskId, roomId, { assignedTo });
+
+export const toggleAgentTaskWatch = (taskId: string, roomId: string, watcher: TaskPerson, watching: boolean) => {
+  const task = getAgentTask(taskId, roomId);
+  if (!task) return null;
+  const watchers = watching
+    ? [...task.watchers.filter((entry) => entry.userId !== watcher.userId), watcher].slice(-20)
+    : task.watchers.filter((entry) => entry.userId !== watcher.userId);
+  return updateTaskDetails(taskId, roomId, { watchers });
 };
 
 export const registerAgentTaskController = (taskId: string, controller: AbortController) => {

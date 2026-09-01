@@ -59,6 +59,8 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
   const { setThemeId, themeId } = useTheme();
   const socketRef = useRoomSocket(roomId, session);
   const aiSelection = useAIStore((state) => state.selection);
+  const aiProviders = useAIStore((state) => state.providers);
+  const aiTasks = useAIStore((state) => state.agentTasks);
   const setAISelection = useAIStore((state) => state.setSelection);
   const setAIAction = useAIStore((state) => state.setAction);
   const setAIDraft = useAIStore((state) => state.setDraft);
@@ -570,6 +572,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
             currentVersion={room.version}
             fileContents={Object.fromEntries(Object.values(room.workspace.files).map((file) => [file.id, file.content]))}
             session={session}
+            participants={room.participants}
             canInsert={!room.isPaused}
             execution={executionContext}
             diagnostics={diagnostics}
@@ -649,7 +652,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
         </aside>
 
         <aside className="hidden w-[280px] shrink-0 overflow-hidden lg:block">
-          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onDownloadFile={handleDownloadFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} onAskAI={openGitAI} />
+          <WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onDownloadFile={handleDownloadFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} onAskAI={openGitAI} aiProviders={aiProviders} aiTasks={aiTasks} />
         </aside>
 
         <nav className="theme-panel-solid flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--border)] px-2 py-1 lg:hidden" aria-label="Mobile workspace navigation">
@@ -661,7 +664,7 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
           <button type="button" onClick={() => { setMobileWorkspaceOpen(false); showPanel("chat"); }} className="shrink-0 rounded px-3 py-1.5 text-xs text-[var(--text-muted)]">Chat</button>
         </nav>
 
-        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onDownloadFile={handleDownloadFile} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} onAskAI={openGitAI} /></div></div> : null}
+        {mobileWorkspaceOpen ? <div className="fixed inset-x-0 bottom-0 top-[7.25rem] z-20 flex min-h-0 flex-col border-t border-[var(--border)] bg-[var(--panel)] shadow-2xl lg:hidden"><div className="flex shrink-0 justify-end border-b border-[var(--border)] px-3 py-1"><button type="button" onClick={() => setMobileWorkspaceOpen(false)} className="rounded px-2 py-1 text-xs text-[var(--text-muted)] hover:bg-[var(--badge-bg)]">Close</button></div><div className="min-h-0 flex-1"><WorkspaceExplorer roomId={room.roomId} session={session} workspace={room.workspace} socketRef={socketRef} onNotify={pushToast} repository={gitRoomId === room.roomId ? repository : null} gitLoading={gitRoomId === room.roomId && gitLoading} gitError={gitRoomId === room.roomId ? gitError : null} gitStatusByFileId={gitRoomId === room.roomId ? gitStatusByFileId : {}} mode={activity === "source-control" ? "source-control" : activity === "search" ? "search" : activity === "deploy" ? "deploy" : "explorer"} onOpenFile={openWorkspaceFile} onCopyRoomLink={() => void handleCopyRoomLink()} onRefreshGit={refreshGit} onReviewDiff={reviewDiff} onAskAI={openGitAI} aiProviders={aiProviders} aiTasks={aiTasks} /></div></div> : null}
 
         <section className="min-h-0 min-w-0 flex flex-1 flex-col p-2 sm:p-3">
           <div className="theme-panel-solid flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border shadow-[var(--shadow-soft)]">

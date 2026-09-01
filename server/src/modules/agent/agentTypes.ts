@@ -17,6 +17,7 @@ export type AgentDiagnosisConfidence = "confirmed" | "likely" | "possible";
 export type AgentMemoryCategory = "currentTask" | "recentDecisions" | "patchDecisions" | "projectFacts" | "validationResults";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
+export type AgentTaskPriority = "normal" | "high" | "urgent";
 export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable" | "cancelled";
 export type AgentToolName =
   | "READ_FILE"
@@ -165,6 +166,12 @@ export interface AgentTaskPublic {
   classification?: AgentTaskClassification;
   initiatorLabel?: string;
   requestedBy?: string;
+  priority: AgentTaskPriority;
+  assignedTo?: { userId: string; displayName: string };
+  watchers: Array<{ userId: string; displayName: string }>;
+  files?: string[];
+  reviewCount?: number;
+  resultSummary?: string;
   notes?: AgentTaskNote[];
   summary: string;
   status: AgentTaskStatus;

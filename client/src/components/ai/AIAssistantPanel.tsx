@@ -1,11 +1,11 @@
-import { Bot, Check, ChevronDown, ClipboardCopy, FileDiff, ListChecks, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Send, Sparkles, Square, X } from "lucide-react";
+import { Bot, Check, ChevronDown, ClipboardCopy, FileDiff, ListChecks, LoaderCircle, MessageSquare, Paperclip, Plus, RefreshCw, Send, Sparkles, Square, Users, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { api } from "../../lib/api";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { useAIStore } from "../../store/useAIStore";
 import type { AIAction, AIConversationMessage, AIProviderId } from "../../types/ai";
 import type { AgentEvent, AgentMemorySnapshot, AgentMode, AgentPatch, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../../types/agent";
-import type { UserSession } from "../../types/collaboration";
+import type { Participant, UserSession } from "../../types/collaboration";
 
 interface AIAssistantPanelProps {
   roomId: string;
@@ -15,6 +15,7 @@ interface AIAssistantPanelProps {
   currentVersion: number;
   fileContents: Record<string, string>;
   session: UserSession;
+  participants: Participant[];
   canInsert: boolean;
   execution?: { output: string; failed: boolean };
   diagnostics: import("../../types/agent").AgentDiagnostic[];
@@ -71,13 +72,21 @@ const suggestedWorkflows: Array<{ label: string; prompt: string }> = [
   { label: "Explain this", prompt: "Explain the current file and its important decisions." },
   { label: "Review changes", prompt: "Review the current workspace changes for bugs and security issues." },
   { label: "Write tests", prompt: "Find the existing test pattern and propose focused tests for the current code." },
-  { label: "Refactor", prompt: "Suggest a small, safe refactor for the current file." }
+  { label: "Refactor", prompt: "Suggest a small, safe refactor for the current file." },
+  { label: "Performance", prompt: "Investigate performance using evidence from expensive operations, renders, socket traffic, and requests. Suggest safe improvements without changing code." },
+  { label: "Security review", prompt: "Review authorization, secrets, input validation, path handling, prompt injection, and provider boundaries. Report evidence-backed findings only." },
+  { label: "Session summary", prompt: "Summarize this session with actual work, changes, validation, open tasks, and next steps. Say when evidence is missing." }
 ];
 
 const inferWorkflow = (prompt: string, fallbackAction: AIAction): { action: AIAction; mode: AgentMode } => {
   const value = prompt.toLocaleLowerCase();
   if (/commit message|pull request (summary|description)|pr summary|understand (this )?project|onboard/.test(value)) return { action: "summarize", mode: "EXPLAIN" };
   if (/conflict|merge markers|remote changes/.test(value)) return { action: "fix", mode: "DEBUG" };
+  if (/performance|slow|latency|render|socket traffic|bundle/.test(value)) return { action: "optimize", mode: "ASK" };
+  if (/security|secret|permission|authorization|injection|vulnerab/.test(value)) return { action: "review", mode: "ASK" };
+  if (/\b(test|tests|coverage|regression)\b/.test(value)) return { action: "test", mode: "EDIT" };
+  if (/\b(refactor|restructure|simplify)\b/.test(value)) return { action: "refactor", mode: "EDIT" };
+  if (/\b(document|developer notes|readme)\b/.test(value)) return { action: "document", mode: "EDIT" };
   if (/\b(debug|diagnos|stack trace|exception|crash|not working|doesn't work|does not work|broken|bug|error)\b/.test(value)) return { action: "fix", mode: "DEBUG" };
   if (/\b(build|implement|add|create|change|update|remove|modify|write|make)\b/.test(value)) return { action: "generate", mode: "EDIT" };
   if (/\b(review|audit|inspect)\b/.test(value)) return { action: "review", mode: "ASK" };
@@ -233,6 +242,7 @@ export const AIAssistantPanel = ({
   currentVersion,
   fileContents,
   session,
+  participants,
   canInsert,
   execution,
   diagnostics,
@@ -303,6 +313,15 @@ export const AIAssistantPanel = ({
     } catch (issue) {
       useAIStore.getState().setDraft(ai.draft);
       setAttachmentNotice(issue instanceof Error ? issue.message : "The task note could not be added.");
+    }
+  };
+
+  const updateSharedTask = async (taskId: string, update: () => Promise<{ task: AgentTaskPublic }>) => {
+    try {
+      const result = await update();
+      useAIStore.getState().receiveAgentTask({ type: "task_updated", task: result.task });
+    } catch (issue) {
+      setAttachmentNotice(issue instanceof Error ? issue.message : "The shared task could not be updated.");
     }
   };
 
@@ -446,6 +465,21 @@ export const AIAssistantPanel = ({
           {task.notes?.length ? <div className="mt-2 space-y-1 border-t border-[var(--border)] pt-2">{task.notes.slice(-3).map((note) => <p key={note.id} className="text-[10px] leading-4 text-[var(--text-muted)]"><span className="font-medium text-[var(--text-secondary)]">{note.authorName}:</span> {note.message}</p>)}</div> : null}
           {noteTaskId === task.taskId ? <form className="mt-2 flex gap-1.5" onSubmit={(event) => { event.preventDefault(); void submitTaskNote(task.taskId); }}><input value={noteDraft} onChange={(event) => setNoteDraft(event.target.value.slice(0, 280))} maxLength={280} placeholder="Add a note for the team" className="theme-input min-w-0 flex-1 rounded-lg border px-2 py-1.5 text-[10px]" /><button type="submit" className="theme-button-neutral rounded-lg border px-2 py-1.5 text-[10px]">Add</button></form> : null}
         </div>)}</div> : <p className="mt-2 text-[10px] text-[var(--text-faint)]">No shared AI tasks yet. Start one from the chat below.</p>}
+      </details>
+
+      <details className="mx-4 mt-2 shrink-0 rounded-xl border border-[var(--border)] bg-[var(--badge-bg)] px-3 py-2">
+        <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] font-semibold text-[var(--text-primary)]"><Users className="h-3.5 w-3.5 text-[var(--accent)]" />Team controls <span className="font-normal text-[var(--text-muted)]">priority · assignment · watching</span></summary>
+        <div className="mt-2 space-y-2">
+          {sharedTasks.slice(0, 6).map((task) => <div key={`control-${task.taskId}`} className="rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] p-2">
+            <p className="truncate text-[10px] font-medium text-[var(--text-primary)]">{task.summary}</p>
+            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+              <select aria-label={`Priority for ${task.summary}`} value={task.priority} onChange={(event) => void updateSharedTask(task.taskId, () => api.setAgentTaskPriority(roomId, session.guestToken, task.taskId, event.target.value as "normal" | "high" | "urgent"))} className="theme-input min-w-0 rounded-md border px-1.5 py-1 text-[10px]"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select>
+              <select aria-label={`Assign ${task.summary}`} value={task.assignedTo?.userId ?? ""} onChange={(event) => void updateSharedTask(task.taskId, () => api.assignAgentTask(roomId, session.guestToken, task.taskId, event.target.value || undefined))} className="theme-input min-w-0 rounded-md border px-1.5 py-1 text-[10px]"><option value="">Unassigned</option>{participants.map((participant) => <option key={participant.userId} value={participant.userId}>{participant.displayName}</option>)}</select>
+            </div>
+            <div className="mt-1.5 flex items-center justify-between gap-2"><button type="button" onClick={() => void updateSharedTask(task.taskId, () => api.watchAgentTask(roomId, session.guestToken, task.taskId, !task.watchers.some((watcher) => watcher.userId === session.userId)))} className="rounded-md border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--text-muted)] hover:text-[var(--text-primary)]">{task.watchers.some((watcher) => watcher.userId === session.userId) ? "Watching" : "Watch task"}</button><span className="truncate text-[10px] text-[var(--text-faint)]">{task.watchers.length ? `${task.watchers.length} watching` : "No watchers"}{task.files?.length ? ` · ${task.files.length} files` : ""}</span></div>
+          </div>)}
+          {!sharedTasks.length ? <p className="text-[10px] text-[var(--text-faint)]">Task controls appear when the room has a shared AI task.</p> : null}
+        </div>
       </details>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-4" onScroll={(event) => { const element = event.currentTarget; setFollowLatest(element.scrollHeight - element.scrollTop - element.clientHeight < 48); }}>

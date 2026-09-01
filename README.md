@@ -109,6 +109,7 @@ npm run test:media --workspace server
 - Honest run workflow: copy/download source and open a language-matched external runner
 - Optional LiveKit voice, video, screen sharing, and device controls
 - GitHub Source control workflow: connect a server-configured GitHub integration, import a repository branch, browse/edit it collaboratively, inspect status and diff, stage, prepare a commit, push without force, pull safely, create branches, and open pull requests
+- Batch 4 project intelligence: a bounded project snapshot/map, evidence-based health and demo readiness, project onboarding/tour prompts, contextual performance/security/debug/review workflows, and compact team task controls
 
 ## Supabase and optional services
 
@@ -214,3 +215,11 @@ The assistant remains chat-first. A natural-language request is routed to Ask, E
 The right-side surfaces are intentionally separated: Chat shows only the room thread, Join call opens only the voice/video surface, People shows collaborator presence and role controls, Activity shows the shared timeline, and the floating assistant button opens the AI chat popup. Deploy is currently an honest export/provider-status surface; it does not claim to deploy to Vercel or Render.
 
 The requested frontend/backend organization is already present in the repository: `client/` is the Vercel frontend and `server/` is the Render backend. See the [senior architecture and product review](docs/ARCHITECTURE_REVIEW.md) for the feature audit, what is intentionally not needed, and the recommended next milestones.
+
+## Improvement Batch 4 — project intelligence and team workflows
+
+Explorer includes a compact project snapshot and map backed by the authorized bounded project index. It shows actual framework/language signals, entry points, important areas, Git state, fixed-check history, AI readiness, active shared tasks, and honest unavailable/not-run states. The existing AI chat can start Understand project, Tour, What’s happening?, Session summary, teammate handoff, performance investigation, security review, documentation, test-generation, refactor, issue-analysis, and diff-review workflows. AI output is evidence-led and untrusted; edits are proposals that still require explicit review and approval.
+
+Shared task cards remain room-scoped and bounded. Collaborators can set Normal/High/Urgent presentation priority, assign a task to a current room collaborator, watch/unwatch it, add a short note, and see affected files, review count, validation, and a redacted result summary. Activity can be filtered by All, Humans, AI, Git, and Tests. These controls do not add accounts, bypass authorization, or make AI changes automatic.
+
+Read the full senior product/architecture decision record in [Improvement Batch 4 review](docs/IMPROVEMENT_BATCH_4_REVIEW.md). It records what is supported, what remains process-memory or advisory, and what the product does not need to build.

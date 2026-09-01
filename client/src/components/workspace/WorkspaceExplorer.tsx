@@ -3,9 +3,12 @@ import { useMemo, useState, type MutableRefObject } from "react";
 import type { Socket } from "socket.io-client";
 import type { UserSession, WorkspaceFile, WorkspaceFolder, WorkspaceOperation, WorkspaceState } from "../../types/collaboration";
 import type { AIAction } from "../../types/ai";
+import type { AIProviderDescriptor } from "../../types/ai";
+import type { AgentTaskPublic } from "../../types/agent";
 import type { GitFileStatus, RepositorySummary } from "../../types/git";
 import { DeployPanel } from "./DeployPanel";
 import { SourceControlPanel } from "./SourceControlPanel";
+import { ProjectWorkspacePanel } from "./ProjectWorkspacePanel";
 
 interface WorkspaceExplorerProps {
   roomId: string;
@@ -24,12 +27,14 @@ interface WorkspaceExplorerProps {
   onRefreshGit?: () => Promise<void>;
   onReviewDiff?: () => void;
   onAskAI?: (prompt: string, action: AIAction) => void;
+  aiProviders?: AIProviderDescriptor[];
+  aiTasks?: AgentTaskPublic[];
 }
 
 const byName = <T extends { name: string }>(left: T, right: T) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" });
 const operationId = () => crypto.randomUUID();
 
-export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenFile, onCopyRoomLink, onDownloadFile, onRefreshGit, onReviewDiff, onAskAI }: WorkspaceExplorerProps) => {
+export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNotify, repository = null, gitLoading = false, gitError = null, gitStatusByFileId = {}, mode = "explorer", onOpenFile, onCopyRoomLink, onDownloadFile, onRefreshGit, onReviewDiff, onAskAI, aiProviders = [], aiTasks = [] }: WorkspaceExplorerProps) => {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [clipboardFileId, setClipboardFileId] = useState<string | null>(null);
   const [fileQuery, setFileQuery] = useState("");
@@ -160,6 +165,7 @@ export const WorkspaceExplorer = ({ roomId, session, workspace, socketRef, onNot
     <div className="mt-3 min-h-0 flex-1 overflow-auto px-2">{searchType === "content" ? contentResults.map((result) => <button key={`${result.file.id}-${result.line}`} type="button" onClick={() => onOpenFile?.(result.file.id)} className="mb-1 w-full rounded-md border border-transparent px-2 py-2 text-left hover:border-[var(--border)] hover:bg-[var(--badge-bg)]"><span className="block truncate text-[11px] text-[var(--text-secondary)]">{result.file.name}:{result.line}</span><span className="block truncate font-mono text-[10px] text-[var(--text-faint)]">{result.text || "(blank line)"}</span></button>) : Object.values(workspace.files).slice(0, 500).filter((file) => { const query = caseSensitive ? fileQuery.trim() : fileQuery.trim().toLocaleLowerCase(); const name = caseSensitive ? file.name : file.name.toLocaleLowerCase(); return (!query || name.includes(query)) && (fileType === "all" || file.extension === fileType); }).slice(0, 20).map((file) => <button key={file.id} type="button" onClick={() => onOpenFile?.(file.id)} className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-[11px] text-[var(--text-secondary)] hover:bg-[var(--badge-bg)]"><FileCode2 className="h-3.5 w-3.5 shrink-0 text-[var(--accent)]" /><span className="min-w-0 truncate">{file.name}</span><span className="ml-auto text-[10px] text-[var(--text-faint)]">{file.extension ? `.${file.extension}` : "file"}</span></button>)}{fileQuery.trim() && searchType === "content" && !contentResults.length ? <p className="px-2 py-4 text-[11px] text-[var(--text-faint)]">No content matches in the bounded workspace search.</p> : null}</div>
   </div>;
   return <div className="flex h-full min-h-0 flex-col border-r border-[var(--border)] bg-[var(--glass)] py-3 backdrop-blur-xl">
+    {onOpenFile && onAskAI ? <ProjectWorkspacePanel roomId={roomId} session={session} workspace={workspace} providers={aiProviders} tasks={aiTasks} onOpenFile={onOpenFile} onAskAI={onAskAI} /> : null}
     <div className="flex items-center justify-between gap-2 px-3">
       <div><p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[var(--text-faint)]">Explorer</p><h2 className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">{workspace.name}</h2></div>
       <div className="flex items-center gap-1"><button type="button" className="rounded p-1.5 hover:bg-[var(--badge-bg)]" title="New file" onClick={() => create("create-file")}><Plus className="h-4 w-4" /></button><button type="button" className="rounded p-1.5 hover:bg-[var(--badge-bg)]" title="New folder" onClick={() => create("create-folder")}><FolderPlus className="h-4 w-4" /></button><button type="button" className="rounded p-1.5 hover:bg-[var(--badge-bg)]" title="Refresh workspace" onClick={refreshWorkspace}><RefreshCw className="h-4 w-4" /></button></div>

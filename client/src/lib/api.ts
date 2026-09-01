@@ -1,9 +1,10 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 import type { GitBranchSummary, GitDiffFile, GitHubConnectionStatus, GitHubRepositorySummary, ProjectSummary, RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
-import type { AgentCompletionResult, AgentEvent, AgentMemorySnapshot, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
+import type { AgentCompletionResult, AgentEvent, AgentMemorySnapshot, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPriority, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import type { ExecutionAction, ExecutionCapabilities, ExecutionRecord } from "../types/execution";
+import type { ProjectExperience } from "../types/project";
 import { parseAgentEvent } from "./agentProtocol";
 import { storage } from "./storage";
 
@@ -216,6 +217,12 @@ export const api = {
     const effectiveSession = session ?? storage.getSession(roomId);
     const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/status${roomSessionQuery(effectiveSession)}`));
     return (await readJson<{ ok: true; repository: RepositorySummary }>(response)).repository;
+  },
+
+  async getProjectExperience(roomId: string, session?: UserSession | null) {
+    const effectiveSession = session ?? storage.getSession(roomId);
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/project/experience${roomSessionQuery(effectiveSession)}`));
+    return (await readJson<{ ok: true; experience: ProjectExperience }>(response)).experience;
   },
 
   async getGitHubStatus(roomId: string, session?: UserSession | null) {
@@ -525,6 +532,21 @@ export const api = {
 
   async addAgentTaskNote(roomId: string, guestToken: string | undefined, taskId: string, message: string) {
     const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/notes`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, message }) });
+    return await readJson<{ ok: true; task: AgentTaskPublic }>(response);
+  },
+
+  async setAgentTaskPriority(roomId: string, guestToken: string | undefined, taskId: string, priority: AgentTaskPriority) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/priority`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, priority }) });
+    return await readJson<{ ok: true; task: AgentTaskPublic }>(response);
+  },
+
+  async assignAgentTask(roomId: string, guestToken: string | undefined, taskId: string, assigneeId?: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/assignment`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, assigneeId: assigneeId ?? null }) });
+    return await readJson<{ ok: true; task: AgentTaskPublic }>(response);
+  },
+
+  async watchAgentTask(roomId: string, guestToken: string | undefined, taskId: string, watching: boolean) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/${encodeURIComponent(taskId)}/watch`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, watching }) });
     return await readJson<{ ok: true; task: AgentTaskPublic }>(response);
   },
 

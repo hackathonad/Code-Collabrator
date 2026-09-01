@@ -6,9 +6,9 @@ import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
 import { emitAgentWorkspaceChange, getAgentProposal, getPublicAgentProposalState, registerAgentProposal, updateAgentProposal } from "../modules/agent/agentEvents";
 import { AgentRuntimeError, executeAgent } from "../modules/agent/agentRuntime";
 import { createAgentToolRegistry } from "../modules/agent/agentToolRegistry";
-import { addAgentTaskNote, cancelAgentTask, findSimilarAgentTask, getAgentTask, getPublicAgentTaskHistory, recordTaskPatches, recordTaskValidation, registerAgentTaskController, startAgentTask, taskStatusForResult, unregisterAgentTaskController, updateAgentTask } from "../modules/agent/agentTaskHistory";
+import { addAgentTaskNote, assignAgentTask, cancelAgentTask, findSimilarAgentTask, getAgentTask, getPublicAgentTaskHistory, recordTaskPatches, recordTaskValidation, registerAgentTaskController, setAgentTaskPriority, startAgentTask, taskStatusForResult, toggleAgentTaskWatch, unregisterAgentTaskController, updateAgentTask } from "../modules/agent/agentTaskHistory";
 import { createValidationRunner } from "../modules/agent/validationRunner";
-import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
+import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentTaskPriority, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
 import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
@@ -171,10 +171,25 @@ const sendError = (response: Response, error: unknown) => {
   response.status(500).json({ ok: false, message: "Unable to complete the coding-agent request", code: "AGENT_ERROR" });
 };
 
+const loadTaskControlContext = async (request: GuestRequest) => {
+  const roomId = sanitizeRoomId(request.params.roomId);
+  const body = isRecord(request.body) ? request.body : {};
+  const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+  const taskId = typeof request.params.taskId === "string" ? request.params.taskId.trim().slice(0, 128) : "";
+  if (!roomId || !userId || !taskId) throw new AgentRouteError(401, "A valid room session and task ID are required", "ROOM_SESSION_INVALID");
+  if (!rateLimit(`${roomId}:${userId}:task-control`, env.agentRequestRateLimit)) throw new AgentRouteError(429, "Task updates are temporarily rate limited.", "RATE_LIMITED");
+  if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+  const participant = roomStore.getParticipant(roomId, userId);
+  const task = getAgentTask(taskId, roomId);
+  if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
+  return { roomId, userId, participant, task, body };
+};
+
 const updateTaskFromResult = (taskId: string, result: Awaited<ReturnType<typeof executeAgent>>) => {
   const validation = [...result.events].reverse().find((event): event is Extract<AgentEvent, { type: "validation" }> => event.type === "validation");
   if (validation) recordTaskValidation(taskId, validation.status ?? (validation.ok ? "passed" : "failed"), validation.summary);
   recordTaskPatches(taskId, result.patches);
+  updateAgentTask(taskId, { files: [...new Set(result.patches.flatMap((patch) => (patch.files ?? [{ path: patch.path }]).map((file) => file.path)))].slice(0, 10), reviewCount: result.review?.length ?? result.patches.reduce((count, patch) => count + (patch.review?.length ?? 0), 0), resultSummary: result.finalText.replace(/(api[_-]?key|secret|password|token|authorization|cookie)\s*([:=])\s*([^\s,;]+)/gi, "$1$2 [REDACTED]").replace(/\s+/g, " ").trim().slice(0, 240) });
   const terminal = taskStatusForResult(result.stoppedReason);
   const waitingForApproval = result.patches.length > 0 && terminal === "completed";
   updateAgentTask(taskId, { status: waitingForApproval ? "waiting_for_approval" : terminal });
@@ -341,6 +356,43 @@ router.post("/rooms/:roomId/agent/:taskId/notes", guestSession, async (request, 
     const updated = addAgentTaskNote(taskId, roomId, userId, participant.displayName, message);
     if (!updated) throw new AgentRouteError(409, "This task note could not be added", "TASK_NOTE_REJECTED");
     roomStore.recordActivity(roomId, userId, "agent", "added a note to a shared AI task", { taskId });
+    response.json({ ok: true, task: updated });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/:taskId/priority", guestSession, async (request, response) => {
+  try {
+    const { roomId, userId, participant, task, body } = await loadTaskControlContext(request as GuestRequest);
+    const priority = body.priority === "urgent" || body.priority === "high" || body.priority === "normal" ? body.priority as AgentTaskPriority : null;
+    if (!priority) throw new AgentRouteError(400, "Choose a normal, high, or urgent task priority", "INVALID_PRIORITY");
+    const updated = setAgentTaskPriority(task.taskId, roomId, priority);
+    if (!updated) throw new AgentRouteError(409, "The task priority could not be updated", "TASK_UPDATE_REJECTED");
+    roomStore.recordActivity(roomId, userId, "agent", `${participant.displayName} set task priority to ${priority}`, { taskId: task.taskId });
+    response.json({ ok: true, task: updated });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/:taskId/assignment", guestSession, async (request, response) => {
+  try {
+    const { roomId, userId, participant, task, body } = await loadTaskControlContext(request as GuestRequest);
+    const assigneeId = body.assigneeId === null || body.assigneeId === "" ? undefined : typeof body.assigneeId === "string" ? body.assigneeId.trim().slice(0, 128) : null;
+    if (assigneeId === null) throw new AgentRouteError(400, "A valid room collaborator is required", "INVALID_ASSIGNEE");
+    const assignee = assigneeId ? roomStore.getRoomSnapshot(roomId).participants.find((entry) => entry.userId === assigneeId) : undefined;
+    if (assigneeId && !assignee) throw new AgentRouteError(403, "Tasks can only be assigned to collaborators in this room", "ASSIGNEE_NOT_IN_ROOM");
+    const updated = assignAgentTask(task.taskId, roomId, assignee ? { userId: assignee.userId, displayName: assignee.displayName } : undefined);
+    if (!updated) throw new AgentRouteError(409, "The task assignment could not be updated", "TASK_UPDATE_REJECTED");
+    roomStore.recordActivity(roomId, userId, "agent", `${participant.displayName} ${assignee ? `assigned the task to ${assignee.displayName}` : "cleared the task assignment"}`, { taskId: task.taskId });
+    response.json({ ok: true, task: updated });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/:taskId/watch", guestSession, async (request, response) => {
+  try {
+    const { roomId, userId, participant, task, body } = await loadTaskControlContext(request as GuestRequest);
+    if (typeof body.watching !== "boolean") throw new AgentRouteError(400, "A watching boolean is required", "INVALID_WATCH_STATE");
+    const updated = toggleAgentTaskWatch(task.taskId, roomId, { userId, displayName: participant.displayName }, body.watching);
+    if (!updated) throw new AgentRouteError(409, "The task watch state could not be updated", "TASK_UPDATE_REJECTED");
+    roomStore.recordActivity(roomId, userId, "agent", `${participant.displayName} ${body.watching ? "is watching" : "stopped watching"} the AI task`, { taskId: task.taskId });
     response.json({ ok: true, task: updated });
   } catch (error) { sendError(response, error); }
 });

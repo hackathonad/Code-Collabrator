@@ -38,6 +38,8 @@ Agent safety limits are configurable on the server and remain bounded even when 
 
 Supabase is database-only in this product. There are no browser Supabase variables and no Supabase Auth session requirement. If persistence is disabled or unavailable, the server keeps rooms in memory and `/ready` reports `persistence.configured`, `persistence.healthy`, and a generic status without exposing provider details to the browser.
 
+Improvement Batch 4 does not add an environment variable. The project snapshot endpoint derives its read-only overview from the authorized virtual workspace, bounded project index, fixed execution history, current Git service state, safe provider descriptors, and room-scoped AI task state. Build, tests, TypeScript, ESLint, Git, AI, and demo-readiness rows remain honest when a check, provider, or repository has not been run or configured. Do not add a browser Supabase client or provider credentials to support these surfaces.
+
 The current client intentionally does not read `VITE_SUPABASE_URL` or `VITE_SUPABASE_ANON_KEY`; do not add them to the frontend. Browser-local state is limited to signed guest sessions, Quick Rejoin, cached room snapshots, themes, and AI settings/conversations. Socket IDs, presence, cursors, typing state, and provider credentials are never stored there.
 
 ## Coding-agent runtime
@@ -89,3 +91,5 @@ Room presence, active-file labels, activity entries, shared AI task summaries, a
 The assistant can receive bounded text-file reference content and local image previews. Images are not sent to a provider unless a future server path explicitly supports safe vision uploads; the current UI correctly describes them as reference-only. A task note is a short collaborator handoff, not a command to the agent. Similar active tasks are detected per room and require an explicit start-anyway choice.
 
 The current task/activity runtime is memory-backed. Supabase room snapshots preserve the room workspace and bounded activity when configured, but they do not yet provide durable AI task recovery after a Render process restart. If restart-safe task ownership, notes, and proposal history are required, that should be implemented as a reviewed database design rather than by exposing provider or guest credentials.
+
+Task priority, assignment, and watching are bounded room controls, not security controls. Assignees must be current room participants; watchers and notes are clipped and redacted. Priority only changes presentation and never bypasses agent limits, patch approval, validation, Git authorization, or room isolation.

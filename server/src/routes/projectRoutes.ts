@@ -1,5 +1,10 @@
 import { Router } from "express";
 import { env } from "../config/env";
+import { aiService } from "../modules/ai/aiService";
+import { buildProjectIndex } from "../modules/agent/agentIntelligence";
+import { getPublicAgentTaskHistory } from "../modules/agent/agentTaskHistory";
+import { buildProjectExperience } from "../modules/agent/projectExperience";
+import { executionService } from "../modules/execution/executionService";
 import { guestSession, type GuestRequest } from "../middleware/guestSession";
 import { GitHubApiError, GitHubClient, validateBranchName, validateRepositoryPart } from "../modules/git/githubClient";
 import { publishGitState } from "../modules/git/gitEvents";
@@ -149,6 +154,13 @@ router.get("/:roomId/github/repositories/:owner/:repository/issues", guestSessio
 router.get("/:roomId/project", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
   const { room } = await requireRoom(request as GuestRequest);
   response.json({ ok: true, project: projectService.getSummary(room.workspace)?.project ?? null, repository: projectService.getSummary(room.workspace) });
+}));
+
+router.get("/:roomId/project/experience", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
+  const { room } = await requireRoom(request as GuestRequest);
+  const repository = await gitService.getSummary(room.workspace).catch(() => null);
+  const experience = buildProjectExperience({ room, index: buildProjectIndex(room), repository, executions: executionService.list(room.roomId, room.workspace.id), providers: aiService.getProviders(), tasks: getPublicAgentTaskHistory(room.roomId) });
+  response.json({ ok: true, experience });
 }));
 
 router.post("/:roomId/project/import", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
