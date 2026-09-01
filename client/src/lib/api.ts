@@ -1,7 +1,7 @@
 ﻿import type { RoomSnapshot, SupportedLanguage, UserSession } from "../types/collaboration";
 import type { GitBranchSummary, GitDiffFile, GitHubConnectionStatus, GitHubRepositorySummary, ProjectSummary, RepositorySummary } from "../types/git";
 import type { AIAction, AICompletionResult, AIProviderDescriptor, AISettings, AIStreamEvent } from "../types/ai";
-import type { AgentCompletionResult, AgentEvent, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
+import type { AgentCompletionResult, AgentEvent, AgentMemorySnapshot, AgentPatch, AgentProposalPublic, AgentRequestPayload, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../types/agent";
 import type { MediaSessionResponse } from "../types/media";
 import type { ExecutionAction, ExecutionCapabilities, ExecutionRecord } from "../types/execution";
 import { parseAgentEvent } from "./agentProtocol";
@@ -212,6 +212,12 @@ export const api = {
     return payload.repository;
   },
 
+  async getGitStatus(roomId: string, session?: UserSession | null) {
+    const effectiveSession = session ?? storage.getSession(roomId);
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/git/status${roomSessionQuery(effectiveSession)}`));
+    return (await readJson<{ ok: true; repository: RepositorySummary }>(response)).repository;
+  },
+
   async getGitHubStatus(roomId: string, session?: UserSession | null) {
     const effectiveSession = session ?? storage.getSession(roomId);
     const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/status${roomSessionQuery(effectiveSession)}`));
@@ -238,6 +244,12 @@ export const api = {
     const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
     const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/branches?${query.toString()}`));
     return (await readJson<{ ok: true; branches: GitBranchSummary[] }>(response)).branches;
+  },
+
+  async listGitHubIssues(roomId: string, session: UserSession, owner: string, repository: string) {
+    const query = new URLSearchParams({ guestToken: session.guestToken ?? "" });
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/issues?${query.toString()}`));
+    return (await readJson<{ ok: true; issues: Array<{ number: number; title: string; body: string; url: string; state: string; labels: string[] }> }>(response)).issues;
   },
 
   async importGitHubProject(roomId: string, session: UserSession, input: { owner: string; repository: string; branch?: string; projectName?: string }) {
@@ -289,7 +301,7 @@ export const api = {
 
   async createPullRequest(roomId: string, session: UserSession, input: { title: string; body: string; head?: string; base?: string }) {
     const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/pull-requests`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ ...input, guestToken: session.guestToken }) });
-    return await readJson<{ ok: true; pullRequest: { number: number; url: string; state: string; head: string; base: string }; repository: RepositorySummary }>(response);
+    return await readJson<{ ok: true; pullRequest: { number: number; url: string; title: string; state: string; head: string; base: string }; repository: RepositorySummary }>(response);
   },
 
   async listPullRequests(roomId: string, session: UserSession) {
@@ -476,6 +488,22 @@ export const api = {
     const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
     const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/history?${query.toString()}`));
     return (await readJson<{ ok: true; tasks: AgentTaskPublic[] }>(response)).tasks;
+  },
+
+  async getAgentMemory(roomId: string, guestToken: string | undefined) {
+    const query = new URLSearchParams(); if (guestToken) query.set("guestToken", guestToken);
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/memory?${query.toString()}`));
+    return (await readJson<{ ok: true; memory: AgentMemorySnapshot }>(response)).memory;
+  },
+
+  async addAgentMemory(roomId: string, guestToken: string | undefined, summary: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/memory`), { method: "POST", headers: jsonHeaders(), body: JSON.stringify({ guestToken, summary }) });
+    return await readJson<{ ok: true; memory: AgentMemorySnapshot }>(response);
+  },
+
+  async removeAgentMemory(roomId: string, guestToken: string | undefined, entryId: string) {
+    const response = await fetchApi(buildApiUrl(`/api/ai/rooms/${roomId}/agent/memory/${encodeURIComponent(entryId)}`), { method: "DELETE", headers: jsonHeaders(), body: JSON.stringify({ guestToken }) });
+    return await readJson<{ ok: true; memory: AgentMemorySnapshot }>(response);
   },
 
   async getAgentProposals(roomId: string, guestToken: string | undefined) {

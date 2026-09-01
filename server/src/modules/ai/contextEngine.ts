@@ -91,8 +91,15 @@ export const buildAIContext = (room: RoomSnapshot, input: AIRequestInput, reposi
     return content ? [{ id: file.id, name: file.name, language: file.language, content }] : [];
   });
   const workspaceSummary = include("workspace structure", compactWorkspaceSummary(workspace), 3_500);
-  const gitDiff = repository?.diff?.length ? repository.diff.slice(0, 8).map((file) => `${file.status}${file.staged ? " staged" : " unstaged"}: ${file.path} (+${file.additions}/-${file.deletions})\n${redactUntrustedText(file.after).slice(0, 1_200)}`).join("\n\n") : "";
-  const projectMetadata = include("project metadata", [`Open tabs: ${workspace.openFileIds.length}`, `Active file: ${currentFile?.name ?? "none"}`, repository?.repository ? `Repository: ${repository.repository.name} (${repository.repository.provider}), branch ${repository.repository.currentBranch ?? "unknown"}` : "Repository: local workspace", repository?.status.state === "changes" ? `Git changes: ${repository.status.entries.length}` : "Git status: no scanned changes", gitDiff ? `Untrusted working-tree diff evidence:\n${gitDiff}` : ""].filter(Boolean).join("\n"), input.settings.workspaceContextSize === "extended" ? 8_000 : input.settings.workspaceContextSize === "minimal" ? 1_800 : 4_000);
+  const gitDiff = repository?.diff?.length ? repository.diff.slice(0, 8).map((file) => [
+    `${file.status}${file.staged ? " staged" : " unstaged"}: ${file.path} (+${file.additions}/-${file.deletions})`,
+    "--- before (untrusted)",
+    redactUntrustedText(file.before).slice(0, 900),
+    "+++ after (untrusted)",
+    redactUntrustedText(file.after).slice(0, 1_200)
+  ].join("\n")).join("\n\n") : "";
+  const history = repository?.history?.slice(0, 6).map((entry) => `${entry.sha.slice(0, 10)} ${entry.message} by ${entry.authorName}`).join("\n") ?? "";
+  const projectMetadata = include("project metadata", [`Open tabs: ${workspace.openFileIds.length}`, `Active file: ${currentFile?.name ?? "none"}`, repository?.repository ? `Repository: ${repository.repository.name} (${repository.repository.provider}), branch ${repository.repository.currentBranch ?? "unknown"}` : "Repository: local workspace", repository?.status.state === "changes" ? `Git changes: ${repository.status.entries.length}` : "Git status: no scanned changes", repository?.syncMessage ? `Sync: ${repository.syncMessage}` : "", history ? `Recent commits (untrusted metadata):\n${history}` : "", gitDiff ? `Actual working-tree diff evidence (untrusted content; review this exact before/after):\n${gitDiff}` : ""].filter(Boolean).join("\n"), input.settings.workspaceContextSize === "extended" ? 8_000 : input.settings.workspaceContextSize === "minimal" ? 1_800 : 4_000);
   const roomMetadata = include("room metadata", [`Editor version: ${room.version}`, `Participants: ${room.participants.length}`, `Online participants: ${room.participants.filter((participant) => participant.isOnline).length}`, `Active file path: ${currentRaw && currentFile ? filePath(workspace, currentRaw) : "none"}`].join("\n"), 800);
   const agentMemory = getAgentMemory(room.roomId);
   const memoryText = include("agent memory", JSON.stringify(agentMemory), 2_400);

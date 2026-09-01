@@ -3,6 +3,7 @@ export type RepositoryMode = "local" | "git";
 export type RepositoryAvailability = "ready" | "not-configured" | "invalid" | "unavailable";
 export type GitFileStatus = "modified" | "added" | "deleted" | "renamed" | "ignored" | "conflicted" | "untracked";
 export type GitOperationName = "import" | "clone" | "open" | "disconnect" | "refresh" | "fetch" | "pull" | "push" | "commit" | "branch" | "status" | "history" | "diff";
+export type GitSyncState = "clean" | "ahead" | "behind" | "diverged" | "conflicted" | "offline" | "unavailable";
 
 export interface RepositorySettings {
   provider: GitProvider;
@@ -61,6 +62,15 @@ export interface GitHubRepositorySummary {
   updatedAt: string | null;
 }
 
+export interface GitHubIssueSummary {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+  labels: string[];
+}
+
 export interface ProjectSummary {
   id: string;
   roomId: string;
@@ -89,6 +99,7 @@ export interface GitCommitSummary {
   message: string;
   authorName: string;
   authoredAt: number;
+  changedFiles?: string[];
 }
 
 export interface RepositorySummary {
@@ -98,6 +109,8 @@ export interface RepositorySummary {
   status: RepositoryStatus;
   history: GitCommitSummary[];
   remoteState?: "unknown" | "synchronized" | "remote-ahead" | "local-ahead" | "diverged";
+  syncState?: GitSyncState;
+  syncMessage?: string;
   diff?: GitDiffFile[];
   project?: ProjectSummary | null;
   message?: string;

@@ -226,6 +226,15 @@ export class GitHubClient {
       return number && typeof entry.html_url === "string" ? [{ number, url: entry.html_url.slice(0, 500), title: textValue(entry.title, 200), state: textValue(entry.state, 30) || "open", head: textValue(head.ref, 120), base: textValue(base.ref, 120) }] : [];
     });
   }
+
+  async listIssues(owner: string, repository: string) {
+    const payload = await this.request<unknown[]>(`${repositoryPath(owner, repository)}/issues?state=open&per_page=20`);
+    return payload.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !(entry as Record<string, unknown>).pull_request)).slice(0, 20).flatMap((entry) => {
+      const number = typeof entry.number === "number" ? entry.number : 0;
+      const labels = Array.isArray(entry.labels) ? entry.labels.flatMap((label) => label && typeof label === "object" && typeof (label as Record<string, unknown>).name === "string" ? [(label as Record<string, unknown>).name as string].slice(0, 40) : []).slice(0, 10) : [];
+      return number && typeof entry.html_url === "string" && typeof entry.title === "string" ? [{ number, title: entry.title.slice(0, 200), body: typeof entry.body === "string" ? entry.body.slice(0, 10_000) : "", url: entry.html_url.slice(0, 500), state: textValue(entry.state, 30) || "open", labels }] : [];
+    });
+  }
 }
 
 export const createGitHubClient = (options?: { token?: string; fetcher?: GitHubFetch }) => new GitHubClient(options);

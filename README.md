@@ -185,6 +185,7 @@ The room page keeps the top toolbar compact and places development controls in t
 - [Production deployment architecture, Vercel, backend, and Render](docs/DEPLOYMENT.md)
 - [Environment variable reference](docs/ENVIRONMENT.md)
 - [Senior architecture and product review](docs/ARCHITECTURE_REVIEW.md)
+- [Improvement Batch 3 Git/AI workflow review](docs/GIT_WORKFLOW_REVIEW.md)
 - [Production launch checklist](docs/LAUNCH_CHECKLIST.md)
 - [Realtime load-test plan](docs/LOAD_TESTING.md)
 - [Security policy](SECURITY.md)

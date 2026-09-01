@@ -81,10 +81,11 @@ const operationError = (error: unknown) => {
   if (error instanceof GitHubApiError) {
     if (error.code === "ROOM_NOT_FOUND") return { status: 404, message: error.message };
     if (error.code === "ROOM_FORBIDDEN" || error.code === "GITHUB_NOT_CONNECTED") return { status: 403, message: error.message };
-    if (error.code === "GITHUB_NOT_CONFIGURED" || error.code === "GITHUB_UNAVAILABLE" || error.code === "GITHUB_TIMEOUT") return { status: error.status, message: error.message };
+    if (error.code === "GITHUB_NOT_CONFIGURED" || error.code === "GITHUB_UNAVAILABLE" || error.code === "GITHUB_TIMEOUT" || error.code === "GITHUB_UNAUTHORIZED") return { status: error.status, message: error.message };
     if (error.code === "GITHUB_RATE_LIMITED" || error.code === "RATE_LIMITED") return { status: 429, message: error.message };
     if (error.code === "GITHUB_NOT_FOUND") return { status: 404, message: error.message };
     if (error.code === "INVALID_BRANCH" || error.code === "INVALID_REPOSITORY" || error.code === "UNSAFE_REPOSITORY_PATH") return { status: 400, message: error.message };
+    if (["LOCAL_CHANGES", "REMOTE_AHEAD", "DIVERGED"].includes(error.code)) return { status: 409, message: error.message };
     return { status: error.status >= 400 && error.status < 500 ? error.status : 502, message: error.message };
   }
   const status = roomErrorStatus(error, 400);
@@ -140,6 +141,11 @@ router.get("/:roomId/github/repositories/:owner/:repository/branches", guestSess
   response.json({ ok: true, branches: await clientForRequest().listBranches(validateRepositoryPart(String(request.params.owner), "owner"), validateRepositoryPart(String(request.params.repository), "repository")) });
 }));
 
+router.get("/:roomId/github/repositories/:owner/:repository/issues", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
+  const { roomId, userId } = await requireRoom(request as GuestRequest); requireConnection(roomId, userId); checkLimit("github-issues", roomId, userId, env.githubApiRateLimit);
+  response.json({ ok: true, issues: await clientForRequest().listIssues(validateRepositoryPart(String(request.params.owner), "owner"), validateRepositoryPart(String(request.params.repository), "repository")) });
+}));
+
 router.get("/:roomId/project", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
   const { room } = await requireRoom(request as GuestRequest);
   response.json({ ok: true, project: projectService.getSummary(room.workspace)?.project ?? null, repository: projectService.getSummary(room.workspace) });
@@ -157,7 +163,43 @@ router.post("/:roomId/project/import", guestSession, (request, response) => with
 }));
 
 router.get("/:roomId/git/status", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
-  const { roomId, userId, room } = await requireRoom(request as GuestRequest); checkLimit("git-status", roomId, userId, env.githubApiRateLimit); const summary = await gitService.getSummary(room.workspace); const record = projectService.get(roomId, room.workspace.id); if (record && connections.has(connectionKey(roomId, userId))) { const remoteHead = await clientForRequest().getBranch(record.project.repositoryOwner, record.project.repositoryName, record.project.selectedBranch); summary.remoteState = remoteHead === record.baseHead ? "synchronized" : "remote-ahead"; } response.json({ ok: true, repository: summary });
+  const { roomId, userId, room } = await requireRoom(request as GuestRequest);
+  checkLimit("git-status", roomId, userId, env.githubApiRateLimit);
+  const summary = await gitService.getSummary(room.workspace);
+  const record = projectService.get(roomId, room.workspace.id);
+  if (!record) {
+    summary.syncState = "unavailable";
+    summary.syncMessage = "Connect a repository to compare this workspace with a remote branch.";
+    response.json({ ok: true, repository: summary });
+    return;
+  }
+  const hasLocalChanges = summary.status.entries.some((entry) => entry.status !== "ignored");
+  if (!connections.has(connectionKey(roomId, userId))) {
+    summary.remoteState = "unknown";
+    summary.syncState = "unavailable";
+    summary.syncMessage = "GitHub is not connected for this guest session, so remote status is unavailable.";
+    response.json({ ok: true, repository: summary });
+    return;
+  }
+  try {
+    const remoteHead = await clientForRequest().getBranch(record.project.repositoryOwner, record.project.repositoryName, record.project.selectedBranch);
+    if (remoteHead === record.baseHead) {
+      summary.remoteState = hasLocalChanges ? "local-ahead" : "synchronized";
+      summary.syncState = hasLocalChanges ? "ahead" : "clean";
+      summary.syncMessage = hasLocalChanges ? "Local workspace changes are ahead of the last remote commit." : "Workspace and remote branch are synchronized.";
+    } else {
+      summary.remoteState = hasLocalChanges ? "diverged" : "remote-ahead";
+      summary.syncState = hasLocalChanges ? "diverged" : "behind";
+      summary.syncMessage = hasLocalChanges ? "Remote changes and local workspace changes both need review." : "Remote changes are available. Pull only after reviewing the incoming workspace.";
+    }
+  } catch (error) {
+    if (error instanceof GitHubApiError && ["GITHUB_UNAVAILABLE", "GITHUB_TIMEOUT", "GITHUB_RATE_LIMITED"].includes(error.code)) {
+      summary.remoteState = "unknown";
+      summary.syncState = "offline";
+      summary.syncMessage = "GitHub status is temporarily unavailable. Local workspace status is still current.";
+    } else throw error;
+  }
+  response.json({ ok: true, repository: summary });
 }));
 
 router.get("/:roomId/git/diff", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {

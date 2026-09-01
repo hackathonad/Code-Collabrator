@@ -128,6 +128,10 @@ In a two-guest test, edit different files, send chat, create one AI task, add a 
 
 The Deploy activity item is intentionally truthful until a hosting provider integration exists. It shows a safe notification and supports copying the room link or downloading the current source; it does not deploy or claim that Vercel/Render changed. A future deployment integration needs provider authorization, deployment records, logs, rollback, and audit controls before it is enabled.
 
+### Batch 3 Git/AI acceptance check
+
+After a backend/frontend build, verify the Source control activity in this order: connect GitHub explicitly, inspect repository metadata and the current branch, edit a virtual-workspace file, stage/unstage it, open the actual before/after diff, and use **Review diff**. Review findings are advisory and any **Investigate** action only prepares a normal user-submitted agent task. Generate a commit message or PR summary from the actual diff, edit it, prepare the commit, and confirm the separate push/PR prompts before any GitHub write. A remote-ahead or diverged state must remain visible and block unsafe pull/push actions. Open issues are read-only and their **Analyze** action must not silently submit an AI task. If GitHub is not configured or a request is rate-limited, the UI must show unavailable/retry state rather than a simulated repository.
+
 After any source or Vercel-variable change, trigger a new **Production** deployment. A previously deployed Vercel build does not change when environment variables are edited. The landing page must be guest-first (display-name field and Create/Join Room controls); a deployed page showing Sign in/Sign up is an obsolete build and must be rebuilt from the current repository.
 
 ## Troubleshooting

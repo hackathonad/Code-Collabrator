@@ -34,4 +34,14 @@ export const getAgentMemory = (roomId: string): AgentMemorySnapshot => {
   };
 };
 
+export const removeAgentMemory = (roomId: string, category: "projectFacts", entryId: string) => {
+  const memory = memories.get(roomId);
+  if (!memory) return false;
+  const next = memory.projectFacts.filter((entry) => entry.id !== entryId);
+  if (next.length === memory.projectFacts.length) return false;
+  memory.projectFacts = next;
+  memories.set(roomId, memory);
+  return true;
+};
+
 export const clearAgentMemory = (roomId: string) => { memories.delete(roomId); };

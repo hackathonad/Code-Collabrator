@@ -14,6 +14,7 @@ import { roomPersistence } from "../services/roomPersistence";
 import { sanitizeRoomId } from "../utils/validation";
 import { env } from "../config/env";
 import { logSafeEvent } from "../utils/safeLogger";
+import { getAgentMemory, recordAgentMemory, removeAgentMemory } from "../modules/agent/agentMemory";
 
 const router = Router();
 const requestWindows = new Map<string, { startedAt: number; count: number }>();
@@ -374,6 +375,46 @@ router.get("/rooms/:roomId/agent/history", guestSession, async (request, respons
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
     response.json({ ok: true, tasks: getPublicAgentTaskHistory(roomId) });
+  } catch (error) { sendError(response, error); }
+});
+
+router.get("/rooms/:roomId/agent/memory", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const userId = verifyGuestSessionToken(roomId, typeof request.query.guestToken === "string" ? request.query.guestToken : undefined);
+    if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    response.json({ ok: true, memory: getAgentMemory(roomId) });
+  } catch (error) { sendError(response, error); }
+});
+
+router.post("/rooms/:roomId/agent/memory", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const summary = clip(body.summary, 320);
+    if (!roomId || !userId || !summary) throw new AgentRouteError(400, "A room session and bounded memory note are required", "INVALID_MEMORY");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    const participant = roomStore.getParticipant(roomId, userId);
+    const entry = recordAgentMemory(roomId, "projectFacts", summary);
+    roomStore.recordActivity(roomId, userId, "agent", `${participant.displayName} updated project memory`);
+    response.json({ ok: true, entry, memory: getAgentMemory(roomId) });
+  } catch (error) { sendError(response, error); }
+});
+
+router.delete("/rooms/:roomId/agent/memory/:entryId", guestSession, async (request, response) => {
+  try {
+    const roomId = sanitizeRoomId(request.params.roomId);
+    const body = isRecord(request.body) ? request.body : {};
+    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const entryId = typeof request.params.entryId === "string" ? request.params.entryId.slice(0, 128) : "";
+    if (!roomId || !userId || !entryId) throw new AgentRouteError(400, "A valid room session and memory entry are required", "INVALID_MEMORY");
+    if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
+    roomStore.getParticipant(roomId, userId);
+    if (!removeAgentMemory(roomId, "projectFacts", entryId)) throw new AgentRouteError(404, "Project memory entry not found", "MEMORY_NOT_FOUND");
+    response.json({ ok: true, memory: getAgentMemory(roomId) });
   } catch (error) { sendError(response, error); }
 });
 

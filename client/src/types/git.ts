@@ -2,6 +2,7 @@ export type GitProvider = "github" | "gitlab" | "bitbucket" | "azure-devops" | "
 export type RepositoryMode = "local" | "git";
 export type RepositoryAvailability = "ready" | "not-configured" | "invalid" | "unavailable";
 export type GitFileStatus = "modified" | "added" | "deleted" | "renamed" | "ignored" | "conflicted" | "untracked";
+export type GitSyncState = "clean" | "ahead" | "behind" | "diverged" | "conflicted" | "offline" | "unavailable";
 
 export interface RepositoryMetadata {
   id: string;
@@ -50,6 +51,15 @@ export interface GitHubRepositorySummary {
   updatedAt: string | null;
 }
 
+export interface GitHubIssueSummary {
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  state: string;
+  labels: string[];
+}
+
 export interface ProjectSummary {
   id: string;
   roomId: string;
@@ -71,8 +81,10 @@ export interface RepositorySummary {
   availability: RepositoryAvailability;
   repository: RepositoryMetadata | null;
   status: { state: "clean" | "changes" | "unavailable"; entries: GitStatusEntry[]; scannedAt: number; cached: boolean };
-  history: Array<{ sha: string; message: string; authorName: string; authoredAt: number }>;
+  history: Array<{ sha: string; message: string; authorName: string; authoredAt: number; changedFiles?: string[] }>;
   remoteState?: "unknown" | "synchronized" | "remote-ahead" | "local-ahead" | "diverged";
+  syncState?: GitSyncState;
+  syncMessage?: string;
   diff?: GitDiffFile[];
   project?: ProjectSummary | null;
   message?: string;

@@ -36,7 +36,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     if (get().roomId === roomId && get().workspaceId === workspaceId && get().repository) return;
     set({ roomId, workspaceId, loading: true, error: null });
     try {
-      const repository = await api.getRepository(roomId);
+      const repository = await api.getGitStatus(roomId);
       const recentRepositories = repository.repository ? saveRecentRepository(repository.repository) : get().recentRepositories;
       set({ repository, recentRepositories, loading: false });
     } catch (error) {
@@ -48,7 +48,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     if (!roomId) return;
     set({ loading: true, error: null });
     try {
-      const repository = await api.refreshRepository(roomId);
+      const repository = await api.getGitStatus(roomId);
       const recentRepositories = repository.repository ? saveRecentRepository(repository.repository) : get().recentRepositories;
       set({ repository, recentRepositories, loading: false });
     } catch (error) {

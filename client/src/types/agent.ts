@@ -8,6 +8,7 @@ export type ValidationCategory = "typecheck" | "lint" | "tests" | "build";
 export type AgentProposalStatus = "pending" | "approved" | "rejected" | "stale" | "applied";
 export type AgentTaskStatus = "queued" | "planning" | "running" | "waiting_for_approval" | "applying" | "validating" | "completed" | "cancelled" | "failed" | "timed_out" | "conflict";
 export type AgentValidationStatus = "not-run" | "running" | "passed" | "failed" | "skipped" | "unavailable" | "cancelled";
+export type AgentMemoryCategory = "currentTask" | "recentDecisions" | "patchDecisions" | "projectFacts" | "validationResults";
 
 export interface AgentDiagnostic {
   fileId?: string;
@@ -110,6 +111,9 @@ export interface AgentTaskNote {
   message: string;
   createdAt: number;
 }
+
+export interface AgentMemoryEntry { id: string; category: AgentMemoryCategory; summary: string; taskId?: string; createdAt: number; }
+export interface AgentMemorySnapshot { currentTask: AgentMemoryEntry | null; recentDecisions: AgentMemoryEntry[]; patchDecisions: AgentMemoryEntry[]; projectFacts: AgentMemoryEntry[]; validationResults: AgentMemoryEntry[]; }
 
 export interface AgentTaskEvent {
   type: "task_started" | "task_updated";

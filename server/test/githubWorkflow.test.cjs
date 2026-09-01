@@ -28,6 +28,16 @@ test("GitHub client uses the fixed API origin, bounds responses, and normalizes 
   await assert.rejects(() => failing.getAuthenticatedUser(), (error) => error instanceof GitHubApiError && error.code === "GITHUB_RATE_LIMITED" && !error.message.includes("rate limited"));
 });
 
+test("GitHub issues are read-only, bounded, and exclude pull requests", async () => {
+  let requestedUrl = "";
+  const client = new GitHubClient({ token: "server-only-token", fetcher: async (url) => { requestedUrl = url; return response([
+    { number: 7, title: "Improve onboarding", body: "Please explain the setup.", html_url: "https://github.com/octocat/demo/issues/7", state: "open", labels: [{ name: "enhancement" }] },
+    { number: 8, title: "PR is not an issue", body: "", html_url: "https://github.com/octocat/demo/pull/8", pull_request: { url: "https://api.github.com/pulls/8" } }
+  ]); } });
+  assert.deepEqual(await client.listIssues("octocat", "demo"), [{ number: 7, title: "Improve onboarding", body: "Please explain the setup.", url: "https://github.com/octocat/demo/issues/7", state: "open", labels: ["enhancement"] }]);
+  assert.match(requestedUrl, /\/repos\/octocat\/demo\/issues\?state=open&per_page=20$/);
+});
+
 test("project status, staging, bounded diff, and push bookkeeping stay workspace scoped", () => {
   projectService.clear();
   const workspace = createWorkspace("owner-a", "workspace-a", "javascript", "console.log('one')", "Project");

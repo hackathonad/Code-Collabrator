@@ -4,7 +4,7 @@ import { api } from "../../lib/api";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { useAIStore } from "../../store/useAIStore";
 import type { AIAction, AIConversationMessage, AIProviderId } from "../../types/ai";
-import type { AgentEvent, AgentMode, AgentPatch, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../../types/agent";
+import type { AgentEvent, AgentMemorySnapshot, AgentMode, AgentPatch, AgentTaskPublic, AgentValidationSummary, ValidationCategory } from "../../types/agent";
 import type { UserSession } from "../../types/collaboration";
 
 interface AIAssistantPanelProps {
@@ -67,6 +67,7 @@ const modeForAction: Partial<Record<AIAction, AgentMode>> = {
 const suggestedWorkflows: Array<{ label: string; prompt: string }> = [
   { label: "Fix a bug", prompt: "Find the most likely bug in the current file and propose a safe fix." },
   { label: "Build a feature", prompt: "Help me build this feature in the shared workspace." },
+  { label: "Understand project", prompt: "Understand this project from the bounded project index. Explain the architecture, entry points, data flow, run and test commands, and risk areas." },
   { label: "Explain this", prompt: "Explain the current file and its important decisions." },
   { label: "Review changes", prompt: "Review the current workspace changes for bugs and security issues." },
   { label: "Write tests", prompt: "Find the existing test pattern and propose focused tests for the current code." },
@@ -75,6 +76,8 @@ const suggestedWorkflows: Array<{ label: string; prompt: string }> = [
 
 const inferWorkflow = (prompt: string, fallbackAction: AIAction): { action: AIAction; mode: AgentMode } => {
   const value = prompt.toLocaleLowerCase();
+  if (/commit message|pull request (summary|description)|pr summary|understand (this )?project|onboard/.test(value)) return { action: "summarize", mode: "EXPLAIN" };
+  if (/conflict|merge markers|remote changes/.test(value)) return { action: "fix", mode: "DEBUG" };
   if (/\b(debug|diagnos|stack trace|exception|crash|not working|doesn't work|does not work|broken|bug|error)\b/.test(value)) return { action: "fix", mode: "DEBUG" };
   if (/\b(build|implement|add|create|change|update|remove|modify|write|make)\b/.test(value)) return { action: "generate", mode: "EDIT" };
   if (/\b(review|audit|inspect)\b/.test(value)) return { action: "review", mode: "ASK" };
@@ -251,6 +254,9 @@ export const AIAssistantPanel = ({
   const [taskQueueOpen, setTaskQueueOpen] = useState(false);
   const [noteTaskId, setNoteTaskId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [projectMemory, setProjectMemory] = useState<AgentMemorySnapshot | null>(null);
+  const [memoryDraft, setMemoryDraft] = useState("");
+  const [memoryNotice, setMemoryNotice] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<AssistantAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -261,6 +267,7 @@ export const AIAssistantPanel = ({
   const generating = ai.generating;
   const lifecycleLabel = ai.lifecycle === "preparing-context" ? "Preparing workspace context…" : ai.lifecycle === "connecting" ? "Connecting to the coding agent…" : ai.lifecycle === "streaming" ? "Working through the request…" : ai.lifecycle === "waiting-for-approval" ? "A safe change is ready for your approval" : ai.lifecycle === "validating" ? "Validating the proposed change…" : ai.lifecycle === "cancelled" ? "Request cancelled" : ai.lifecycle === "timed-out" ? "Request timed out" : ai.lifecycle === "failed" ? "The assistant could not complete that request" : "";
   const contextEvent = [...ai.agentActivity].reverse().find((event): event is Extract<AgentEvent, { type: "context" }> => event.type === "context");
+  const latestReview = [...ai.agentActivity].reverse().find((event): event is Extract<AgentEvent, { type: "review" }> => event.type === "review");
   const technicalEvents = ai.agentActivity.filter((event) => event.type === "tool_call" || event.type === "tool_result" || event.type === "status").slice(-8);
   const lastValidation = [...ai.agentActivity].reverse().find((event): event is Extract<AgentEvent, { type: "validation" | "execution" }> => event.type === "validation" || event.type === "execution");
   const hasAssistantResult = Boolean(conversation?.messages.some((message) => message.role === "assistant" && message.content.trim()));
@@ -279,6 +286,13 @@ export const AIAssistantPanel = ({
     ai.setDraft(reviewOnly ? `Review the current version of ${patch.path} after a collaborator changed it.` : `Regenerate the proposed change for ${patch.path} using the current workspace version.`);
   };
 
+  const investigateFinding = (finding: NonNullable<typeof latestReview>["findings"][number]) => {
+    const location = finding.file ? ` in ${finding.file}${finding.line ? ` at line ${finding.line}` : ""}` : " in the actual current diff";
+    ai.setAction("fix");
+    ai.setAgentMode("DEBUG");
+    ai.setDraft(`Investigate this code-review finding${location}: ${finding.title}. Verify it against the current workspace and propose a minimal safe fix only if the finding is confirmed. Why it matters: ${finding.explanation}`);
+  };
+
   const submitTaskNote = async (taskId: string) => {
     const message = noteDraft.trim();
     if (!message) return;
@@ -292,6 +306,20 @@ export const AIAssistantPanel = ({
     }
   };
 
+  const addProjectMemory = async () => {
+    const summary = memoryDraft.trim();
+    if (!summary) return;
+    try {
+      const result = await api.addAgentMemory(roomId, session.guestToken, summary);
+      setProjectMemory(result.memory);
+      setMemoryDraft("");
+      setMemoryNotice(null);
+    } catch (issue) { setMemoryNotice(issue instanceof Error ? issue.message : "Project memory could not be updated."); }
+  };
+  const removeProjectMemory = async (entryId: string) => {
+    try { setProjectMemory((await api.removeAgentMemory(roomId, session.guestToken, entryId)).memory); } catch (issue) { setMemoryNotice(issue instanceof Error ? issue.message : "Project memory could not be updated."); }
+  };
+
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
   useEffect(() => () => { attachmentsRef.current.forEach((attachment) => { if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl); }); }, []);
   useEffect(() => { void initializeAI(roomId, workspaceId); }, [initializeAI, roomId, workspaceId]);
@@ -302,6 +330,7 @@ export const AIAssistantPanel = ({
       useAIStore.getState().setAgentTaskHistory(tasks);
       useAIStore.getState().setAgentProposalState(proposals);
     }).catch(() => { /* Socket reconnect remains the primary live source. */ });
+    void api.getAgentMemory(roomId, session.guestToken).then((memory) => { if (active) setProjectMemory(memory); }).catch(() => { /* Memory is optional and should not block task history. */ });
     return () => { active = false; };
   }, [roomId, session.guestToken]);
   useEffect(() => { if (followLatest) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }); }, [conversation?.messages.length, ai.agentPatches.length, generating, followLatest]);
@@ -399,6 +428,8 @@ export const AIAssistantPanel = ({
         <p className="mt-2 text-[10px] leading-4 text-[var(--text-faint)]">Provider credentials stay on the server. Choose an available provider explicitly; the assistant never switches silently.</p>
       </details>
 
+      <details className="mx-4 mt-3 shrink-0 rounded-xl border border-[var(--border)] bg-[var(--badge-bg)] px-3 py-2"><summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] font-semibold text-[var(--text-primary)]"><Sparkles className="h-3.5 w-3.5 text-[var(--accent)]" />Project memory <span className="font-normal text-[var(--text-muted)]">{projectMemory?.projectFacts.length ?? 0} bounded notes</span></summary><div className="mt-2"><p className="text-[10px] leading-4 text-[var(--text-faint)]">Inspectable room-scoped notes that help future requests. They are treated as untrusted context and never contain credentials.</p>{projectMemory?.projectFacts.length ? <div className="mt-2 space-y-1.5">{projectMemory.projectFacts.slice(-6).map((entry) => <div key={entry.id} className="flex items-start gap-2 rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] p-2"><p className="min-w-0 flex-1 text-[10px] leading-4 text-[var(--text-muted)]">{entry.summary}</p><button type="button" onClick={() => void removeProjectMemory(entry.id)} className="shrink-0 rounded px-1 text-[10px] text-[var(--text-faint)] hover:bg-white/10 hover:text-rose-200" aria-label="Remove project memory note">Remove</button></div>)}</div> : null}<form className="mt-2 flex gap-1.5" onSubmit={(event) => { event.preventDefault(); void addProjectMemory(); }}><input value={memoryDraft} onChange={(event) => setMemoryDraft(event.target.value.slice(0, 320))} maxLength={320} placeholder="Add a project convention or decision" aria-label="Project memory note" className="theme-input min-w-0 flex-1 rounded-lg border px-2 py-1.5 text-[10px]" /><button type="submit" className="theme-button-neutral rounded-lg border px-2 py-1.5 text-[10px]">Save</button></form>{memoryNotice ? <p role="status" className="mt-1 text-[10px] text-amber-300">{memoryNotice}</p> : null}</div></details>
+
       {ai.duplicateTask ? <div className="mx-4 mt-3 rounded-xl border border-amber-400/25 bg-amber-400/5 p-3 text-[11px]" role="status">
         <p className="font-semibold text-amber-200">A similar AI task is already running.</p>
         <p className="mt-1 text-[var(--text-muted)]">{ai.duplicateTask.summary} · {taskStatusLabel[ai.duplicateTask.status]}</p>
@@ -422,6 +453,13 @@ export const AIAssistantPanel = ({
           <summary className="cursor-pointer text-xs font-semibold text-[var(--text-primary)]">Context used <span className="font-normal text-[var(--text-muted)]">· {contextEvent.files.length} related file{contextEvent.files.length === 1 ? "" : "s"}</span></summary>
           <div className="mt-2 space-y-1 text-[11px] text-[var(--text-muted)]"><p>Current file: <span className="text-[var(--text-secondary)]">{currentFileName}</span></p><p>Workspace: <span className="text-[var(--text-secondary)]">{contextEvent.projectSummary}</span></p>{diagnostics.length ? <p>Diagnostics: <span className="text-[var(--text-secondary)]">{diagnostics.length} editor finding{diagnostics.length === 1 ? "" : "s"}</span></p> : null}<p className="pt-1 text-[10px] text-[var(--text-faint)]">Related files: {contextEvent.files.slice(0, 5).map((file) => file.path).join(", ") || "none"}</p></div>
         </details> : null}
+        {latestReview?.findings.length ? <section className="mb-3 rounded-xl border border-amber-400/25 bg-amber-400/5 p-3" aria-label="AI code review findings">
+          <div className="flex items-center justify-between gap-2"><p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-200">AI review findings</p><span className="text-[10px] text-amber-200/70">Advisory · verify before acting</span></div>
+          <div className="mt-2 space-y-2">{latestReview.findings.slice(0, 12).map((finding, index) => <article key={`${finding.title}-${index}`} className="rounded-lg border border-[var(--border)] bg-[var(--surface-bg)] p-2.5">
+            <div className="flex items-start gap-2"><div className="min-w-0 flex-1"><p className="text-[11px] font-semibold text-[var(--text-primary)]"><span className="mr-1.5 uppercase text-amber-300">{finding.severity}</span>{finding.title}</p><p className="mt-1 text-[10px] leading-4 text-[var(--text-muted)]">{finding.explanation}</p>{finding.file ? <p className="mt-1 font-mono text-[10px] text-[var(--text-faint)]">{finding.file}{finding.line ? `:${finding.line}` : ""}{finding.column ? `:${finding.column}` : ""}</p> : <p className="mt-1 text-[10px] text-[var(--text-faint)]">Exact location unavailable.</p>}</div><button type="button" onClick={() => investigateFinding(finding)} className="theme-button-neutral shrink-0 rounded-lg border px-2 py-1.5 text-[10px]">Investigate</button></div>
+            {finding.suggestion ? <p className="mt-2 border-t border-[var(--border)] pt-2 text-[10px] leading-4 text-[var(--text-secondary)]"><span className="font-semibold">Suggested direction:</span> {finding.suggestion}</p> : null}
+          </article>)}</div>
+        </section> : null}
         {hasAssistantResult && !generating && (contextEvent || ai.agentPatches.length || lastValidation) ? <section className="mb-3 rounded-xl border border-[var(--border)] bg-[var(--surface-bg)] p-3" aria-label="Task summary">
           <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-faint)]">Task summary</p>
           <div className="mt-2 grid gap-1.5 text-[11px] leading-4"><p><span className="font-semibold text-[var(--text-primary)]">What I found:</span> <span className="text-[var(--text-muted)]">{contextEvent ? `Inspected ${contextEvent.files.length} relevant workspace file${contextEvent.files.length === 1 ? "" : "s"}.` : "See the assistant response for the verified findings."}</span></p><p><span className="font-semibold text-[var(--text-primary)]">What I changed:</span> <span className="text-[var(--text-muted)]">{ai.agentPatches.some((patch) => patch.status === "applied") ? "Approved changes are synchronized with the room." : ai.agentPatches.length ? "No files changed yet; proposed changes still await your approval." : "No file changes were proposed."}</span></p>{ai.agentPatches.length ? <p><span className="font-semibold text-[var(--text-primary)]">Files affected:</span> <span className="text-[var(--text-muted)]">{[...new Set(ai.agentPatches.flatMap((patch) => (patch.files ?? [{ path: patch.path }]).map((file) => file.path)))].slice(-8).join(", ")}</span></p> : null}<p><span className="font-semibold text-[var(--text-primary)]">Validation:</span> <span className="text-[var(--text-muted)]">{lastValidation ? `${lastValidation.category} — ${lastValidation.status ?? (lastValidation.ok ? "passed" : "failed")}.` : "Not run."}</span></p><p><span className="font-semibold text-[var(--text-primary)]">Remaining:</span> <span className="text-[var(--text-muted)]">{ai.agentPatches.some((patch) => patch.status === "pending") ? "Review and approve or reject the proposed patch." : ai.agentPatches.some((patch) => patch.status === "stale") ? "Regenerate the stale proposal against the current files." : "Review the response and run a check if needed."}</span></p></div>
