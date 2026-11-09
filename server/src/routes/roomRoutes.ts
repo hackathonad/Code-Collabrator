@@ -1,11 +1,33 @@
 ﻿import { Router } from "express";
+import { env } from "../config/env";
+import { createRateLimiter } from "../lib/rateLimiter";
 import { createGuestSessionToken, guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
 import { roomStore } from "../modules/rooms/roomStore";
+import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { roomPersistence } from "../services/roomPersistence";
+import { EMERGENCY_IDLE_TTL_MS, sweepIdleRooms } from "../services/roomLifecycle";
 import { gitService } from "../modules/git/gitService";
 import { isSupportedLanguage, sanitizeLanguage, sanitizeRoomId, sanitizeUsername } from "../utils/validation";
 
+export { loadRoomIfNeeded };
+
 const router = Router();
+
+// Creating rooms is unauthenticated, so it is limited per network address.
+const createLimiter = createRateLimiter({ limit: env.roomCreateRateLimit, windowMs: 60 * 60_000, maxKeys: 10_000 });
+// Room IDs are the join capability. Repeated misses from one address look like
+// enumeration, so only misses count and they are throttled.
+const missLimiter = createRateLimiter({ limit: env.roomMissRateLimit, windowMs: 60_000, maxKeys: 10_000 });
+const clientAddress = (request: { ip?: string; socket: { remoteAddress?: string } }) => request.ip || request.socket.remoteAddress || "unknown";
+const throttledForMisses = (request: GuestRequest, response: Parameters<typeof sendError>[0]) => {
+  if (!missLimiter.isLimited(clientAddress(request))) return false;
+  sendError(response, 429, "Too many unknown room lookups. Please wait a moment and try again.");
+  return true;
+};
+const recordMiss = (request: GuestRequest) => { missLimiter.hit(clientAddress(request)); };
+
+/** Test hook: clears per-process limiter state. */
+export const resetRoomRouteLimiters = () => { createLimiter.reset(); missLimiter.reset(); };
 
 export const sendError = (response: { status: (status: number) => { json: (payload: unknown) => void } }, status: number, message: string) => {
   response.status(status).json({
@@ -18,22 +40,8 @@ export const roomErrorStatus = (error: unknown, fallback = 400) => {
   const message = error instanceof Error ? error.message : "";
   if (/not found/i.test(message)) return 404;
   if (/permission denied|only the owner|valid room session/i.test(message)) return 403;
-  if (/paused|already exists|conflict/i.test(message)) return 409;
+  if (/paused|already exists|conflict|room is full/i.test(message)) return 409;
   return fallback;
-};
-
-export const loadRoomIfNeeded = async (roomId: string) => {
-  if (roomStore.hasRoom(roomId)) {
-    return true;
-  }
-
-  const persisted = await roomPersistence.loadRoom(roomId);
-  if (!persisted) {
-    return false;
-  }
-
-  roomStore.upsertRoomSnapshot(persisted);
-  return true;
 };
 
 const participantResponse = (roomId: string, userId: string) => ({
@@ -73,6 +81,19 @@ router.post("/", guestSession, async (request, response) => {
     return;
   }
 
+  if (!createLimiter.hit(clientAddress(request))) {
+    sendError(response, 429, "Too many rooms were created from this network. Please try again later.");
+    return;
+  }
+  if (roomStore.roomCount() >= env.maxActiveRooms) {
+    // Try to reclaim rooms nobody has touched for an hour before refusing.
+    await sweepIdleRooms({ ttlMs: EMERGENCY_IDLE_TTL_MS });
+    if (roomStore.roomCount() >= env.maxActiveRooms) {
+      sendError(response, 503, "The server is at room capacity right now. Please try again shortly.");
+      return;
+    }
+  }
+
   const created = roomStore.createRoom(username, language, {
     userId: identity.userId,
     identityKind: "guest",
@@ -108,10 +129,12 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
     sendError(response, 400, "Display name is required");
     return;
   }
+  if (throttledForMisses(request as GuestRequest, response)) return;
 
   try {
     const exists = await loadRoomIfNeeded(roomId);
     if (!exists) {
+      recordMiss(request as GuestRequest);
       sendError(response, 404, "Room not found");
       return;
     }
@@ -153,10 +176,12 @@ router.get("/:roomId", guestSession, async (request, response) => {
     sendError(response, 400, "Valid room ID is required");
     return;
   }
+  if (throttledForMisses(request as GuestRequest, response)) return;
 
   try {
     const exists = await loadRoomIfNeeded(roomId);
     if (!exists) {
+      recordMiss(request as GuestRequest);
       sendError(response, 404, "Room not found");
       return;
     }

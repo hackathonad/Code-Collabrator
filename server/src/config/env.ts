@@ -83,6 +83,15 @@ export interface ServerEnvironment {
   agentMaxIterations: number;
   agentMaxToolCalls: number;
   agentTimeoutMs: number;
+  roomMaxParticipants: number;
+  maxActiveRooms: number;
+  roomCreateRateLimit: number;
+  roomMissRateLimit: number;
+  roomIdleTtlMs: number;
+  roomSweepIntervalMs: number;
+  aiIpRateLimit: number;
+  aiRoomRateLimit: number;
+  aiGlobalDailyLimit: number;
 }
 
 export interface ParsedEnvironment {
@@ -138,6 +147,17 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     agentMaxIterations: toBoundedNumber(source.AGENT_MAX_ITERATIONS, 8, 8),
     agentMaxToolCalls: toBoundedNumber(source.AGENT_MAX_TOOL_CALLS, 20, 20),
     agentTimeoutMs: toBoundedNumber(source.AGENT_TIMEOUT_MS, 90_000, 90_000),
+    // Capacity and abuse controls. Every value has a hard upper bound so a
+    // mistaken deployment setting cannot silently remove the protection.
+    roomMaxParticipants: toBoundedNumber(source.ROOM_MAX_PARTICIPANTS, 25, 100),
+    maxActiveRooms: toBoundedNumber(source.MAX_ACTIVE_ROOMS, 500, 5_000),
+    roomCreateRateLimit: toBoundedNumber(source.ROOM_CREATE_RATE_LIMIT, 60, 1_000),
+    roomMissRateLimit: toBoundedNumber(source.ROOM_MISS_RATE_LIMIT, 20, 300),
+    roomIdleTtlMs: toBoundedNumber(source.ROOM_IDLE_TTL_MS, 86_400_000, 2_592_000_000),
+    roomSweepIntervalMs: toBoundedNumber(source.ROOM_SWEEP_INTERVAL_MS, 300_000, 3_600_000),
+    aiIpRateLimit: toBoundedNumber(source.AI_IP_RATE_LIMIT, 90, 1_000),
+    aiRoomRateLimit: toBoundedNumber(source.AI_ROOM_RATE_LIMIT, 60, 1_000),
+    aiGlobalDailyLimit: toBoundedNumber(source.AI_GLOBAL_DAILY_LIMIT, 5_000, 1_000_000)
   };
 
   const issues: string[] = [];

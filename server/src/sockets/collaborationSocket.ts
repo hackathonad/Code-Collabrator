@@ -1,6 +1,7 @@
 import type { Server, Socket } from "socket.io";
 import { roomStore } from "../modules/rooms/roomStore";
 import { subscribeRoomActivity } from "../modules/rooms/roomStore";
+import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
@@ -240,20 +241,6 @@ const isCurrentBinding = (socket: Socket, roomId: string, userId: string) => {
   } catch {
     return false;
   }
-};
-
-const loadRoomIfNeeded = async (roomId: string) => {
-  if (roomStore.hasRoom(roomId)) {
-    return true;
-  }
-
-  const persisted = await roomPersistence.loadRoom(roomId);
-  if (!persisted) {
-    return false;
-  }
-
-  roomStore.upsertRoomSnapshot(persisted);
-  return true;
 };
 
 const resolveSocketUserId = async (socket: Socket, roomId: string) => {

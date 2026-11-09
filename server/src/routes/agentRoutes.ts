@@ -10,7 +10,9 @@ import { addAgentTaskNote, assignAgentTask, cancelAgentTask, findSimilarAgentTas
 import { createValidationRunner } from "../modules/agent/validationRunner";
 import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentTaskPriority, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
+import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { roomPersistence } from "../services/roomPersistence";
+import { checkAIBudget } from "../services/aiBudget";
 import { sanitizeRoomId } from "../utils/validation";
 import { env } from "../config/env";
 import { logSafeEvent } from "../utils/safeLogger";
@@ -92,14 +94,6 @@ const parseDiagnostics = (value: unknown): AgentDiagnostic[] => !Array.isArray(v
   }];
 });
 
-const loadRoomIfNeeded = async (roomId: string) => {
-  if (roomStore.hasRoom(roomId)) return true;
-  const persisted = await roomPersistence.loadRoom(roomId);
-  if (!persisted) return false;
-  roomStore.upsertRoomSnapshot(persisted);
-  return true;
-};
-
 const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequest; room: ReturnType<typeof roomStore.getRoomSnapshot> }> => {
   const roomId = sanitizeRoomId(request.params.roomId);
   const body = isRecord(request.body) ? request.body : {};
@@ -111,6 +105,9 @@ const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequ
   if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
   let participant: ReturnType<typeof roomStore.getParticipant>;
   try { participant = roomStore.getParticipant(roomId, userId); } catch { throw new AgentRouteError(403, "You are not a participant in this room", "ROOM_SESSION_INVALID"); }
+  // Identities are free to mint, so spend is also bounded by network, room and a global daily budget.
+  const budget = checkAIBudget({ ip: request.ip || request.socket.remoteAddress, roomId });
+  if (!budget.ok) throw new AgentRouteError(budget.status, budget.message, budget.code);
   const room = roomStore.getRoomSnapshot(roomId);
   const settings = parseSettings(body.settings);
   const mode = typeof body.mode === "string" && modes.has(body.mode as AgentMode) ? body.mode as AgentMode : "ASK";

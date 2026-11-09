@@ -3,20 +3,12 @@ import { guestSession, verifyGuestSessionToken } from "../middleware/guestSessio
 import { mediaService as defaultMediaService } from "../modules/media/liveKitMediaService";
 import { MediaUnavailableError, type MediaService } from "../modules/media/mediaTypes";
 import { roomStore } from "../modules/rooms/roomStore";
-import { roomPersistence } from "../services/roomPersistence";
+import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { sanitizeRoomId } from "../utils/validation";
 
 const TOKEN_WINDOW_MS = 60_000;
 const TOKEN_LIMIT = 8;
 const tokenRequests = new Map<string, { startedAt: number; count: number }>();
-
-const loadRoomIfNeeded = async (roomId: string) => {
-  if (roomStore.hasRoom(roomId)) return true;
-  const persisted = await roomPersistence.loadRoom(roomId);
-  if (!persisted) return false;
-  roomStore.upsertRoomSnapshot(persisted);
-  return true;
-};
 
 const allowTokenRequest = (key: string) => {
   const now = Date.now(); const previous = tokenRequests.get(key);
