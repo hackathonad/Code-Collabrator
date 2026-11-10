@@ -16,6 +16,7 @@ import agentRoutes from "./routes/agentRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
 import executionRoutes from "./routes/executionRoutes";
 import { roomPersistence } from "./services/roomPersistence";
+import { registerAgentStatePersistence } from "./services/agentStatePersistence";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
 const API_RATE_LIMIT_MAX_REQUESTS = env.apiRateLimit;
@@ -40,7 +41,7 @@ const apiLimiter: express.RequestHandler = (request, response, next) => {
 export const corsOptions: cors.CorsOptions = {
   origin(origin, callback) { callback(null, isAllowedClientOrigin(origin)); },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
+  allowedHeaders: ["Content-Type", "X-Guest-Token"],
   credentials: false,
   maxAge: 86_400
 };
@@ -48,6 +49,7 @@ export const corsOptions: cors.CorsOptions = {
 export const createApp = () => {
   const app = express();
   app.disable("x-powered-by");
+  registerAgentStatePersistence();
   aiService.registerProvider(createOllamaProvider({ baseUrl: env.ollamaBaseUrl, defaultModel: env.ollamaModel }));
   aiService.registerProvider(createGeminiProvider({ apiKey: env.geminiApiKey, defaultModel: env.geminiModel }));
   aiService.registerProvider(createGroqProvider({ apiKey: env.groqApiKey, defaultModel: env.groqModel }));
@@ -77,7 +79,7 @@ export const createApp = () => {
       persistence,
       ai: { healthy: providers.some((provider) => provider.available), providers },
       agent: { available: true, limits: { maxIterations: env.agentMaxIterations, maxToolCalls: env.agentMaxToolCalls, timeoutMs: env.agentTimeoutMs } },
-      execution: { available: true, scope: "server-project", limits: { timeoutMs: env.executionTimeoutMs, outputLimit: env.executionOutputLimit, maxConcurrent: env.executionMaxConcurrent } },
+      execution: { available: env.serverProjectChecks, scope: "server-project", limits: { timeoutMs: env.executionTimeoutMs, outputLimit: env.executionOutputLimit, maxConcurrent: env.executionMaxConcurrent } },
       features: featureAvailability()
     });
   });

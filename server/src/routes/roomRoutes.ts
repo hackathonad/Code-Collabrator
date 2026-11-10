@@ -1,11 +1,34 @@
 ﻿import { Router } from "express";
-import { createGuestSessionToken, guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
+import { env } from "../config/env";
+import { createRateLimiter } from "../lib/rateLimiter";
+import { GUEST_TOKEN_TTL_MS, createGuestSessionToken, guestSession, guestTokenFromRequest, guestUserIdFromRequest, inspectGuestSessionToken, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
 import { roomStore } from "../modules/rooms/roomStore";
+import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { roomPersistence } from "../services/roomPersistence";
+import { deleteRoomDurably } from "../services/roomDeletion";
+import { EMERGENCY_IDLE_TTL_MS, sweepIdleRooms } from "../services/roomLifecycle";
 import { gitService } from "../modules/git/gitService";
 import { isSupportedLanguage, sanitizeLanguage, sanitizeRoomId, sanitizeUsername } from "../utils/validation";
 
+export { loadRoomIfNeeded };
+
 const router = Router();
+
+// Creating rooms is unauthenticated, so it is limited per network address.
+const createLimiter = createRateLimiter({ limit: env.roomCreateRateLimit, windowMs: 60 * 60_000, maxKeys: 10_000 });
+// Room IDs are the join capability. Repeated misses from one address look like
+// enumeration, so only misses count and they are throttled.
+const missLimiter = createRateLimiter({ limit: env.roomMissRateLimit, windowMs: 60_000, maxKeys: 10_000 });
+const clientAddress = (request: { ip?: string; socket: { remoteAddress?: string } }) => request.ip || request.socket.remoteAddress || "unknown";
+const throttledForMisses = (request: GuestRequest, response: Parameters<typeof sendError>[0]) => {
+  if (!missLimiter.isLimited(clientAddress(request))) return false;
+  sendError(response, 429, "Too many unknown room lookups. Please wait a moment and try again.");
+  return true;
+};
+const recordMiss = (request: GuestRequest) => { missLimiter.hit(clientAddress(request)); };
+
+/** Test hook: clears per-process limiter state. */
+export const resetRoomRouteLimiters = () => { createLimiter.reset(); missLimiter.reset(); };
 
 export const sendError = (response: { status: (status: number) => { json: (payload: unknown) => void } }, status: number, message: string) => {
   response.status(status).json({
@@ -18,22 +41,8 @@ export const roomErrorStatus = (error: unknown, fallback = 400) => {
   const message = error instanceof Error ? error.message : "";
   if (/not found/i.test(message)) return 404;
   if (/permission denied|only the owner|valid room session/i.test(message)) return 403;
-  if (/paused|already exists|conflict/i.test(message)) return 409;
+  if (/paused|already exists|conflict|room is full/i.test(message)) return 409;
   return fallback;
-};
-
-export const loadRoomIfNeeded = async (roomId: string) => {
-  if (roomStore.hasRoom(roomId)) {
-    return true;
-  }
-
-  const persisted = await roomPersistence.loadRoom(roomId);
-  if (!persisted) {
-    return false;
-  }
-
-  roomStore.upsertRoomSnapshot(persisted);
-  return true;
 };
 
 const participantResponse = (roomId: string, userId: string) => ({
@@ -41,14 +50,8 @@ const participantResponse = (roomId: string, userId: string) => ({
   guestToken: createGuestSessionToken(roomId, userId)
 });
 
-const guestTokenFrom = (request: GuestRequest) => {
-  const bodyToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
-  const queryToken = typeof request.query.guestToken === "string" ? request.query.guestToken : "";
-  return bodyToken || queryToken;
-};
-
 export const roomParticipantId = (request: GuestRequest, roomId: string) => {
-  const userId = verifyGuestSessionToken(roomId, guestTokenFrom(request));
+  const userId = guestUserIdFromRequest(request, roomId);
   if (!userId) return "";
   try {
     roomStore.getParticipant(roomId, userId);
@@ -71,6 +74,19 @@ router.post("/", guestSession, async (request, response) => {
   if (request.body?.language !== undefined && !isSupportedLanguage(request.body.language)) {
     sendError(response, 400, "Unsupported room language");
     return;
+  }
+
+  if (!createLimiter.hit(clientAddress(request))) {
+    sendError(response, 429, "Too many rooms were created from this network. Please try again later.");
+    return;
+  }
+  if (roomStore.roomCount() >= env.maxActiveRooms) {
+    // Try to reclaim rooms nobody has touched for an hour before refusing.
+    await sweepIdleRooms({ ttlMs: EMERGENCY_IDLE_TTL_MS });
+    if (roomStore.roomCount() >= env.maxActiveRooms) {
+      sendError(response, 503, "The server is at room capacity right now. Please try again shortly.");
+      return;
+    }
   }
 
   const created = roomStore.createRoom(username, language, {
@@ -108,15 +124,17 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
     sendError(response, 400, "Display name is required");
     return;
   }
+  if (throttledForMisses(request as GuestRequest, response)) return;
 
   try {
     const exists = await loadRoomIfNeeded(roomId);
     if (!exists) {
+      recordMiss(request as GuestRequest);
       sendError(response, 404, "Room not found");
       return;
     }
 
-    const suppliedToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
+    const suppliedToken = guestTokenFromRequest(request);
     const guestUserId = suppliedToken ? verifyGuestSessionToken(roomId, suppliedToken) : identity.userId;
     if (suppliedToken && !guestUserId) {
       sendError(response, 401, "A valid room session is required");
@@ -147,16 +165,51 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
   }
 });
 
+/**
+ * Issues a fresh session for an existing participant. Sessions expire, so
+ * clients call this when a token is old or still in the pre-expiry format.
+ */
+router.post("/:roomId/session/refresh", guestSession, async (request, response) => {
+  const roomId = sanitizeRoomId(request.params.roomId);
+  if (!roomId) {
+    sendError(response, 400, "Valid room ID is required");
+    return;
+  }
+  if (throttledForMisses(request as GuestRequest, response)) return;
+  try {
+    if (!(await loadRoomIfNeeded(roomId))) {
+      recordMiss(request as GuestRequest);
+      sendError(response, 404, "Room not found");
+      return;
+    }
+    const inspected = inspectGuestSessionToken(roomId, guestTokenFromRequest(request));
+    if (!inspected) {
+      sendError(response, 401, "A valid room session is required");
+      return;
+    }
+    if (!roomStore.hasRoom(roomId) || !roomStore.getRoomSnapshot(roomId).participants.some((participant) => participant.userId === inspected.userId)) {
+      sendError(response, 403, "Join this room before refreshing its session.");
+      return;
+    }
+    const guestToken = createGuestSessionToken(roomId, inspected.userId);
+    response.json({ ok: true, guestToken, expiresAt: inspectGuestSessionToken(roomId, guestToken)?.expiresAt ?? Date.now() + GUEST_TOKEN_TTL_MS });
+  } catch (error) {
+    sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Unable to refresh the session");
+  }
+});
+
 router.get("/:roomId", guestSession, async (request, response) => {
   const roomId = sanitizeRoomId(request.params.roomId);
   if (!roomId) {
     sendError(response, 400, "Valid room ID is required");
     return;
   }
+  if (throttledForMisses(request as GuestRequest, response)) return;
 
   try {
     const exists = await loadRoomIfNeeded(roomId);
     if (!exists) {
+      recordMiss(request as GuestRequest);
       sendError(response, 404, "Room not found");
       return;
     }
@@ -279,7 +332,7 @@ router.delete("/:roomId", guestSession, async (request, response) => {
     // Invalidate the live room before touching the optional database. A
     // persistence outage must never leave a deleted room usable in memory.
     roomStore.deleteRoom(roomId, userId);
-    const persisted = await roomPersistence.deleteRoom(roomId);
+    const persisted = await deleteRoomDurably(roomId);
     if (!persisted) {
       sendError(response, 503, "The room was deleted from active memory, but durable persistence could not be updated.");
       return;

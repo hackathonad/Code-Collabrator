@@ -3,6 +3,7 @@ import { Server } from "socket.io";
 import { createApp, corsOptions } from "./app";
 import { assertProductionEnvironment, env, environmentIssues, featureAvailability } from "./config/env";
 import { clearCollaborationRuntime, registerCollaborationSocket } from "./sockets/collaborationSocket";
+import { startRoomSweeper } from "./services/roomLifecycle";
 
 export const createRealtimeServer = () => {
   const app = createApp();
@@ -25,10 +26,12 @@ const closeServer = async (httpServer: HttpServer, io: Server) => {
 export const startServer = () => {
   assertProductionEnvironment();
   const { httpServer, io } = createRealtimeServer();
+  const stopRoomSweeper = startRoomSweeper();
   let shuttingDown = false;
   const shutdown = (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopRoomSweeper();
     console.info(`[shutdown] ${signal} received; closing realtime connections.`);
     const timeout = setTimeout(() => process.exit(1), 10_000);
     timeout.unref();

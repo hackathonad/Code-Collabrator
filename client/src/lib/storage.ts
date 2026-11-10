@@ -6,17 +6,20 @@ const THEME_ID_KEY = "code-sphere-theme-id";
 const LEGACY_THEME_KEY = "code-sphere-theme";
 const ROOM_CACHE_KEY = "code-sphere-room-cache";
 
+// Legacy rooms use 8 hex characters; new rooms use 12.
+const ROOM_ID_PATTERN = /^(?:[a-f0-9]{8}|[a-f0-9]{12})$/i;
+
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === "object" && !Array.isArray(value));
 
 const isStoredSession = (value: unknown): value is UserSession => {
   if (!isRecord(value)) return false;
-  return typeof value.roomId === "string" && /^[a-f0-9]{8}$/i.test(value.roomId)
+  return typeof value.roomId === "string" && ROOM_ID_PATTERN.test(value.roomId)
     && typeof value.userId === "string" && typeof value.username === "string" && value.identityKind === "guest";
 };
 
 const isRecentRoom = (value: unknown): value is RecentRoom => {
   if (!isRecord(value)) return false;
-  return typeof value.roomId === "string" && /^[a-f0-9]{8}$/i.test(value.roomId)
+  return typeof value.roomId === "string" && ROOM_ID_PATTERN.test(value.roomId)
     && typeof value.label === "string" && typeof value.username === "string" && Number.isFinite(value.lastVisitedAt);
 };
 

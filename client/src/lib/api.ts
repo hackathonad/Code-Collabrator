@@ -6,6 +6,7 @@ import type { MediaSessionResponse } from "../types/media";
 import type { ExecutionAction, ExecutionCapabilities, ExecutionRecord } from "../types/execution";
 import type { ProjectExperience } from "../types/project";
 import { parseAgentEvent } from "./agentProtocol";
+import { moveGuestTokenToHeader, usableGuestToken } from "./guestToken";
 import { storage } from "./storage";
 
 const API_URL = import.meta.env?.VITE_API_URL?.replace(/\/+$/, "") ?? "";
@@ -58,6 +59,11 @@ const buildApiUrl = (path: string) => {
 
 const fetchApi = async (input: RequestInfo | URL, init?: RequestInit) => {
   try {
+    // Session tokens must not travel in URLs (proxy and access logs); send them as a header.
+    if (typeof input === "string") {
+      const prepared = moveGuestTokenToHeader(input, init);
+      return await fetch(prepared.input, prepared.init);
+    }
     return await fetch(input, init);
   } catch (error) {
     if (error instanceof TypeError) {
@@ -150,7 +156,8 @@ export const api = {
       headers: jsonHeaders(),
       body: JSON.stringify({
         username,
-        guestToken: existingSession?.guestToken
+        // An expired token would be refused outright; joining without one starts a fresh identity.
+        guestToken: usableGuestToken(existingSession?.guestToken)
       })
     });
 
@@ -161,6 +168,16 @@ export const api = {
     storage.saveSession(session);
 
     return { room: payload.room, session };
+  },
+
+  /** Exchanges a token that is old, or in the pre-expiry format, for a fresh one with the same identity. */
+  async refreshSession(roomId: string, session: UserSession): Promise<UserSession> {
+    const response = await fetchApi(buildApiUrl(`/api/rooms/${roomId}/session/refresh`), {
+      method: "POST",
+      headers: { ...jsonHeaders(), "X-Guest-Token": session.guestToken ?? "" }
+    });
+    const payload = await readJson<{ ok: true; guestToken: string; expiresAt: number }>(response);
+    return { ...session, guestToken: payload.guestToken };
   },
 
   async getRoom(roomId: string, session?: UserSession | null) {

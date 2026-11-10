@@ -278,6 +278,8 @@ export interface ValidationRunResult {
   exitCode: number | null;
   timedOut: boolean;
   cancelled?: boolean;
+  /** True when the check could not run at all (for example, disabled on this deployment). */
+  unavailable?: boolean;
   stdout: string;
   stderr: string;
   durationMs: number;

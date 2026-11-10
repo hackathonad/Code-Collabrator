@@ -1,5 +1,6 @@
 import path from "node:path";
 import dotenv from "dotenv";
+import { parseRepoAllowlist } from "../modules/git/githubPolicy";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -63,6 +64,9 @@ export interface ServerEnvironment {
   anthropicApiKey: string;
   anthropicModel: string;
   githubToken: string;
+  githubSharedTokenEnabled: boolean;
+  githubAllowedRepos: string[];
+  serverProjectChecks: boolean;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
@@ -83,6 +87,16 @@ export interface ServerEnvironment {
   agentMaxIterations: number;
   agentMaxToolCalls: number;
   agentTimeoutMs: number;
+  roomMaxParticipants: number;
+  roomIdBytes: 4 | 6;
+  maxActiveRooms: number;
+  roomCreateRateLimit: number;
+  roomMissRateLimit: number;
+  roomIdleTtlMs: number;
+  roomSweepIntervalMs: number;
+  aiIpRateLimit: number;
+  aiRoomRateLimit: number;
+  aiGlobalDailyLimit: number;
 }
 
 export interface ParsedEnvironment {
@@ -115,7 +129,15 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     anthropicModel: source.ANTHROPIC_MODEL?.trim() ?? "",
     // GitHub credentials are server-only. They are intentionally not part of
     // featureAvailability or any API response.
-    githubToken: source.GITHUB_TOKEN?.trim() ?? "",
+    // A shared token gives every guest the token owner's GitHub access, so it is
+    // ignored unless the operator explicitly opts in, and is then scoped by an allowlist.
+    githubToken: source.GITHUB_SHARED_TOKEN_ENABLED === "true" ? source.GITHUB_TOKEN?.trim() ?? "" : "",
+    githubSharedTokenEnabled: source.GITHUB_SHARED_TOKEN_ENABLED === "true",
+    githubAllowedRepos: parseRepoAllowlist(source.GITHUB_ALLOWED_REPOS),
+    // Fixed project checks run the server's own repository, not the room's code.
+    // They default on for local development and off in production, where the
+    // runtime image has no sources to check.
+    serverProjectChecks: source.ENABLE_SERVER_PROJECT_CHECKS === "true" ? true : source.ENABLE_SERVER_PROJECT_CHECKS === "false" ? false : !isProduction,
     livekitUrl: toLiveKitUrl(source.LIVEKIT_URL),
     livekitApiKey: source.LIVEKIT_API_KEY?.trim() ?? "",
     livekitApiSecret: source.LIVEKIT_API_SECRET?.trim() ?? "",
@@ -138,6 +160,19 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     agentMaxIterations: toBoundedNumber(source.AGENT_MAX_ITERATIONS, 8, 8),
     agentMaxToolCalls: toBoundedNumber(source.AGENT_MAX_TOOL_CALLS, 20, 20),
     agentTimeoutMs: toBoundedNumber(source.AGENT_TIMEOUT_MS, 90_000, 90_000),
+    // Capacity and abuse controls. Every value has a hard upper bound so a
+    // mistaken deployment setting cannot silently remove the protection.
+    roomMaxParticipants: toBoundedNumber(source.ROOM_MAX_PARTICIPANTS, 25, 100),
+    // 6 bytes = 12 hex characters. Use 4 only until the room-id migration is applied to the database.
+    roomIdBytes: source.ROOM_ID_BYTES === "4" ? 4 : 6,
+    maxActiveRooms: toBoundedNumber(source.MAX_ACTIVE_ROOMS, 500, 5_000),
+    roomCreateRateLimit: toBoundedNumber(source.ROOM_CREATE_RATE_LIMIT, 60, 1_000),
+    roomMissRateLimit: toBoundedNumber(source.ROOM_MISS_RATE_LIMIT, 20, 300),
+    roomIdleTtlMs: toBoundedNumber(source.ROOM_IDLE_TTL_MS, 86_400_000, 2_592_000_000),
+    roomSweepIntervalMs: toBoundedNumber(source.ROOM_SWEEP_INTERVAL_MS, 300_000, 3_600_000),
+    aiIpRateLimit: toBoundedNumber(source.AI_IP_RATE_LIMIT, 90, 1_000),
+    aiRoomRateLimit: toBoundedNumber(source.AI_ROOM_RATE_LIMIT, 60, 1_000),
+    aiGlobalDailyLimit: toBoundedNumber(source.AI_GLOBAL_DAILY_LIMIT, 5_000, 1_000_000)
   };
 
   const issues: string[] = [];
@@ -147,6 +182,8 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     issues.push("GUEST_SESSION_SECRET must be a unique value of at least 32 characters in production.");
   }
   if (source.SUPABASE_SERVICE_ROLE_KEY && !config.supabaseUrl) issues.push("SUPABASE_URL is required when SUPABASE_SERVICE_ROLE_KEY is configured.");
+  if (source.GITHUB_TOKEN?.trim() && !config.githubSharedTokenEnabled) issues.push("GITHUB_TOKEN is ignored unless GITHUB_SHARED_TOKEN_ENABLED=true.");
+  if (config.githubSharedTokenEnabled && !config.githubAllowedRepos.length) issues.push("GITHUB_ALLOWED_REPOS is empty: GitHub is limited to read-only access to public repositories.");
   if (config.livekitApiKey || config.livekitApiSecret || config.livekitUrl) {
     if (!(config.livekitApiKey && config.livekitApiSecret && config.livekitUrl)) issues.push("LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must be configured together.");
   }
@@ -174,7 +211,7 @@ export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
   github: Boolean(env.githubToken),
-  execution: true,
+  execution: env.serverProjectChecks,
   ai: {
     ollama: Boolean(env.ollamaBaseUrl),
     gemini: Boolean(env.geminiApiKey),

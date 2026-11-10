@@ -1,5 +1,5 @@
 ﻿export type SupportedLanguage = "javascript" | "python" | "cpp";
-export type RoomRole = "owner" | "moderator" | "member" | "guest";
+export type RoomRole = "owner" | "moderator" | "member" | "guest" | "viewer";
 export type UserIdentityKind = "guest";
 export type ParticipantAccent = "blue" | "emerald" | "amber" | "rose" | "violet" | "cyan";
 export type PresenceStatus = "active" | "idle" | "offline";

@@ -1,4 +1,6 @@
 ﻿import { randomBytes, randomUUID } from "node:crypto";
+import { env } from "../../config/env";
+import { can } from "./roomPermissions";
 import { LANGUAGE_CONFIG, type SupportedLanguage } from "../../constants/languages";
 import type {
   ChatMessage,
@@ -42,7 +44,7 @@ interface ParticipantOptions {
 
 const createRoomId = () => {
   for (;;) {
-    const roomId = randomBytes(4).toString("hex");
+    const roomId = randomBytes(env.roomIdBytes).toString("hex");
     if (!rooms.has(roomId)) {
       return roomId;
     }
@@ -50,6 +52,23 @@ const createRoomId = () => {
 };
 
 const createUserId = () => randomUUID();
+
+/** An offline guest idle this long may be dropped to make room for a new joiner. */
+const STALE_GUEST_MS = 10 * 60_000;
+
+const reclaimStaleGuest = (room: RoomState, now: number) => {
+  const candidate = Object.values(room.participants)
+    .filter((participant) => participant.role === "guest" && !participant.isOnline && participant.userId !== room.ownerId && now - participant.lastActiveAt >= STALE_GUEST_MS)
+    .sort((left, right) => left.lastActiveAt - right.lastActiveAt)[0];
+  if (!candidate) return false;
+  delete room.participants[candidate.userId];
+  return true;
+};
+
+const isIdle = (room: RoomState, ttlMs: number, now: number) =>
+  !room.deletedAt
+  && !Object.values(room.participants).some((participant) => participant.isOnline || participant.socketId)
+  && now - room.updatedAt >= ttlMs;
 
 const defaultCursor = (): CursorState => ({
   lineNumber: 1,
@@ -119,8 +138,8 @@ const ensureRoom = (roomId: string) => {
   return room;
 };
 
-const canEditCode = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
-const canManageContent = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
+const canEditCode = (role: RoomRole) => can(role, "edit");
+const canManageContent = (role: RoomRole) => can(role, "manage-content");
 
 const transferOwnershipIfNeeded = (room: RoomState) => {
   for (const participant of Object.values(room.participants)) {
@@ -324,6 +343,12 @@ export const roomStore = {
         room: serializeRoom(room),
         participant: existingParticipant
       };
+    }
+
+    // Guest identities are free to mint, so membership must be capped. Stale
+    // offline guests are reclaimed first so a full room can still recover.
+    if (Object.keys(room.participants).length >= env.roomMaxParticipants && !reclaimStaleGuest(room, now)) {
+      throw new Error("Room is full");
     }
 
     const identityKind = options?.identityKind ?? "guest";
@@ -803,6 +828,40 @@ export const roomStore = {
 
   hasRoom(roomId: string) {
     return rooms.has(roomId);
+  },
+
+  roomCount() {
+    return rooms.size;
+  },
+
+  isRoomIdle(roomId: string, ttlMs: number, now = Date.now()) {
+    const room = rooms.get(roomId);
+    return Boolean(room && isIdle(room, ttlMs, now));
+  },
+
+  listIdleRoomIds(ttlMs: number, now = Date.now()) {
+    const ids: string[] = [];
+    for (const room of rooms.values()) if (isIdle(room, ttlMs, now)) ids.push(room.roomId);
+    return ids;
+  },
+
+  /**
+   * Drops a room from memory without deleting it. Unlike deleteRoom this is
+   * not a user action: the caller persists the final snapshot first.
+   */
+  evictRoom(roomId: string) {
+    const room = rooms.get(roomId);
+    if (!room) return false;
+    rooms.delete(roomId);
+    executionService.clearRoom(roomId);
+    cancelAgentTasksForRoom(roomId);
+    invalidateProjectIndexCache(roomId, room.workspace.id);
+    clearAgentProposals(roomId);
+    clearAgentTasks(roomId);
+    clearAgentMemory(roomId);
+    projectService.clearRoom(roomId);
+    gitService.invalidate(room.workspace.id);
+    return true;
   },
 
   upsertRoomSnapshot(snapshot: RoomSnapshot) {

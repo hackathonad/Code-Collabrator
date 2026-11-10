@@ -2,7 +2,7 @@ const assert = require("node:assert/strict");
 const express = require("express");
 const http = require("node:http");
 const test = require("node:test");
-const { createGuestSessionToken } = require("../dist/middleware/auth");
+const { createGuestSessionToken } = require("../dist/middleware/guestSession");
 const { createMediaRoutes } = require("../dist/routes/mediaRoutes");
 const { roomStore } = require("../dist/modules/rooms/roomStore");
 

@@ -109,6 +109,8 @@ npm run test:media --workspace server
 - Honest run workflow: copy/download source and open a language-matched external runner
 - Optional LiveKit voice, video, screen sharing, and device controls
 - GitHub Source control workflow: connect a server-configured GitHub integration, import a repository branch, browse/edit it collaboratively, inspect status and diff, stage, prepare a commit, push without force, pull safely, create branches, and open pull requests
+- Roles with server-side enforcement (owner, moderator, member, guest, read-only viewer), expiring signed sessions, capacity and abuse limits, and a shared GitHub token that is opt-in and scoped by an allowlist. See [environment reference](docs/ENVIRONMENT.md).
+- Durable AI teammate state: tasks, patch proposals, and project memory persist in Supabase and are restored after a restart.
 - Batch 4 project intelligence: a bounded project snapshot/map, evidence-based health and demo readiness, project onboarding/tour prompts, contextual performance/security/debug/review workflows, and compact team task controls
 
 ## Supabase and optional services

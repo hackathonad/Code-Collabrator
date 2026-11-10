@@ -52,7 +52,7 @@ Optional AI, media, and GitHub variables are documented in [ENVIRONMENT.md](ENVI
 
 ### GitHub project workflow
 
-Set `GITHUB_TOKEN` only as a Render/server environment variable if the deployment should import and update GitHub repositories. The Source control panel performs a guest-session-scoped explicit connection, repository list, branch selection, bounded import, status/diff, branch, commit-plan, push, pull, and pull-request workflow through the backend. The browser never receives the token and the API only targets the fixed GitHub API origin. The current foundation is deployment-token based, not OAuth or per-user GitHub identity; scope the token to the repositories the deployment is allowed to use.
+Set `GITHUB_TOKEN` and `GITHUB_SHARED_TOKEN_ENABLED=true` only as Render/server environment variables if the deployment should import and update GitHub repositories, and set `GITHUB_ALLOWED_REPOS` to the repositories rooms may use (the token is shared by every guest, so it is ignored unless enabled, and without an allowlist it is read-only for public repositories). The Source control panel performs a guest-session-scoped explicit connection, repository list, branch selection, bounded import, status/diff, branch, commit-plan, push, pull, and pull-request workflow through the backend. The browser never receives the token and the API only targets the fixed GitHub API origin. The current foundation is deployment-token based, not OAuth or per-user GitHub identity; scope the token to the repositories the deployment is allowed to use.
 
 The import limit is 500 files and 4 MB of text. Secret-like paths and binary/oversized files are not imported. Push is non-force and rechecks the remote branch head, while pull and branch switching stop when local collaborator changes exist. The workspace/project metadata is compatible with existing room snapshots, but the in-memory import baseline is lost on a backend restart and must be re-imported; no database migration is applied automatically. Do not add `GITHUB_TOKEN` or any GitHub credential to Vercel `VITE_*` variables.
 
@@ -80,6 +80,14 @@ Validation reports not-run, running, passed, failed, skipped, or unavailable. Be
 
 Monaco diagnostics are sent to the agent as bounded structured evidence. The external Programiz runner does not return execution output to the browser, so opening it does not create an execution result; the agent receives no execution evidence unless a real result is supplied by an existing runner.
 
+### Upgrading to the M1 security milestone
+
+1. Apply migrations 4 and 5 (above) before the new backend starts serving traffic.
+2. GitHub is off until you opt in: set `GITHUB_SHARED_TOKEN_ENABLED=true` and list repositories in `GITHUB_ALLOWED_REPOS`. Startup prints a warning when `GITHUB_TOKEN` is set but ignored, or enabled with no allowlist.
+3. Server project checks are off in production. Set `ENABLE_SERVER_PROJECT_CHECKS=true` only for a build that actually contains the repository sources.
+4. Open browser sessions keep working: old-format tokens are accepted until 2026-12-10 and are upgraded automatically on the next visit. Deploy the new frontend and backend together; the new frontend sends tokens in a header and the new backend still accepts the old form during that window.
+5. Everyone who joins by link is a `guest`. Guests can edit, use the AI, and approve patches they requested; the owner promotes trusted collaborators to `member` so they can approve others' patches and write to GitHub, or demotes a participant to `viewer` for read-only access.
+
 ## Supabase room persistence
 
 Supabase is database-only; it is not an authentication requirement and the browser does not create a Supabase client. For the current guest-first room persistence path, apply these migrations in lexical order:
@@ -87,6 +95,8 @@ Supabase is database-only; it is not an authentication requirement and the brows
 1. `supabase/migrations/202608030001_auth_persistence.sql` — legacy filename; creates the database-only `rooms`, `room_members`, and `room_history` tables.
 2. `supabase/migrations/202608050001_workspace.sql` — adds the durable workspace snapshot column used by the server.
 3. `supabase/migrations/202608260001_guest_database_only.sql` — removes Auth foreign keys and policies from databases that applied the earlier legacy schema.
+4. `supabase/migrations/202611100001_room_ids_and_viewer_role.sql` — allows 12-character room IDs and the read-only `viewer` role. **Apply before deploying the M1 server**, or set `ROOM_ID_BYTES=4` until you have.
+5. `supabase/migrations/202611100002_durable_agent_state.sql` — durable AI tasks, patch proposals, and project memory.
 
 The later analytics and GitHub/account migrations are not required for guest room collaboration. Apply them only when those separately implemented server features are enabled. The active room persistence layer stores room/workspace snapshots, code, chat, bounded history, and membership metadata. It deliberately does not persist socket IDs, online/presence state, cursors, or typing state. Writes are debounced for editor changes and serialized by room/version so an older snapshot cannot overwrite a newer one. The service-role client remains server-only.
 
@@ -106,7 +116,7 @@ The room page provides a bounded collaborative IDE surface: Explorer/Search/Sour
 
 `Run project` for virtual room source copies the active file and opens the configured Programiz page for JavaScript, Python, or C++. Cross-origin browser security prevents Code Collaborator from reading that page's output, so the panel reports only that the external runner opened (or that copying/pop-up access failed); it never displays fabricated stdout, stderr, timing, exit code, or success. Copy Code uses the browser Clipboard API with a visible failure state, and Download File creates the exact active source with a language-appropriate extension.
 
-The backend also exposes explicit safe validation endpoints under `/api/rooms/:roomId/execution`. They accept only fixed `tests`, existing in-scope `server/test/*.test.cjs` targets, `build`, `typecheck`, `lint`, and `diagnostics` actions. No shell string, arbitrary executable, package install, network command, host path, destructive Git action, or room-source execution is accepted. Processes run with `shell: false`, a credential-filtered environment, bounded output, cancellation, timeout, concurrency, per-room rate, request-ID deduplication, and a 40-entry room/workspace history. State is sent over Socket.IO on `execution:state`; join/reconnect receives the latest history. Terminal statuses are queued, running, completed, failed, cancelled, timed out, and unavailable. `/ready` reports safe execution capability and limits without exposing environment values.
+The backend also exposes explicit safe validation endpoints under `/api/rooms/:roomId/execution` (disabled in production unless `ENABLE_SERVER_PROJECT_CHECKS=true`; they check this repository, not the room's code). They accept only fixed `tests`, existing in-scope `server/test/*.test.cjs` targets, `build`, `typecheck`, `lint`, and `diagnostics` actions. No shell string, arbitrary executable, package install, network command, host path, destructive Git action, or room-source execution is accepted. Processes run with `shell: false`, a credential-filtered environment, bounded output, cancellation, timeout, concurrency, per-room rate, request-ID deduplication, and a 40-entry room/workspace history. State is sent over Socket.IO on `execution:state`; join/reconnect receives the latest history. Terminal statuses are queued, running, completed, failed, cancelled, timed out, and unavailable. `/ready` reports safe execution capability and limits without exposing environment values.
 
 Execution status can be included in the existing AI request context when a real fixed-check result or external-runner error is known. It does not claim output that the browser cannot observe. Diagnostics are bounded structured evidence; repository and command output are untrusted data and never override security rules.
 

@@ -45,13 +45,14 @@ const commandFor = (action: ExecutionAction, target?: string, cwd = process.cwd(
 };
 
 export class ExecutionServiceError extends Error {
-  constructor(public readonly code: "EXECUTION_CONFLICT" | "EXECUTION_NOT_FOUND" | "EXECUTION_NOT_ALLOWED" | "EXECUTION_LIMIT", message: string) { super(message); }
+  constructor(public readonly code: "EXECUTION_CONFLICT" | "EXECUTION_NOT_FOUND" | "EXECUTION_NOT_ALLOWED" | "EXECUTION_LIMIT" | "EXECUTION_DISABLED", message: string) { super(message); }
 }
 
 interface StartInput { roomId: string; workspaceId: string; ownerId: string; action: ExecutionAction; target?: string; requestId?: string; }
-interface ExecutionServiceOptions { cwd?: string; timeoutMs?: number; outputLimit?: number; maxConcurrent?: number; spawnProcess?: typeof spawn; }
+interface ExecutionServiceOptions { enabled?: boolean; cwd?: string; timeoutMs?: number; outputLimit?: number; maxConcurrent?: number; spawnProcess?: typeof spawn; }
 
 export class ExecutionService {
+  private readonly enabledOverride: boolean | undefined;
   private readonly cwd: string;
   private readonly timeoutMs: number;
   private readonly outputLimit: number;
@@ -62,6 +63,7 @@ export class ExecutionService {
   private readonly cancelRequested = new Set<string>();
 
   constructor(options: ExecutionServiceOptions = {}) {
+    this.enabledOverride = options.enabled;
     this.cwd = options.cwd ?? process.cwd();
     this.timeoutMs = options.timeoutMs ?? env.executionTimeoutMs;
     this.outputLimit = options.outputLimit ?? env.executionOutputLimit;
@@ -69,8 +71,19 @@ export class ExecutionService {
     this.spawnProcess = options.spawnProcess ?? spawn;
   }
 
+  /** Read per call so an operator setting (and tests) can change it without rebuilding the service. */
+  private get enabled() { return this.enabledOverride ?? env.serverProjectChecks; }
+
   capabilities(): ExecutionCapabilities {
-    return { available: true, scope: "server-project", message: "Safe checks run only against the configured Code Collaborator project. Virtual room source is never passed to an arbitrary shell.", actions: (Object.keys(actionLabels) as ExecutionAction[]).map((action) => ({ action, label: actionLabels[action], available: action !== "run", description: actionDescriptions[action] })) };
+    const enabled = this.enabled;
+    return {
+      available: enabled,
+      scope: "server-project",
+      message: enabled
+        ? "Safe checks run only against the configured Code Collaborator project. Virtual room source is never passed to an arbitrary shell."
+        : "Server-side project checks are turned off on this deployment. Use Run project to copy or open the room's code in an external runner.",
+      actions: (Object.keys(actionLabels) as ExecutionAction[]).map((action) => ({ action, label: actionLabels[action], available: enabled && action !== "run", description: actionDescriptions[action] }))
+    };
   }
 
   list(roomId: string, workspaceId: string) { return (this.history.get(`${roomId}:${workspaceId}`) ?? []).map((record) => ({ ...record })); }
@@ -78,6 +91,7 @@ export class ExecutionService {
   get(executionId: string, roomId: string, workspaceId: string) { const record = getExecution(executionId); return record && record.roomId === roomId && record.workspaceId === workspaceId ? { ...record } : null; }
 
   start(input: StartInput) {
+    if (!this.enabled && input.action !== "run") throw new ExecutionServiceError("EXECUTION_DISABLED", "Server-side project checks are turned off on this deployment.");
     const requestId = input.requestId?.trim().slice(0, 100) || undefined;
     const key = `${input.roomId}:${input.workspaceId}`;
     const prior = this.history.get(key)?.find((record) => requestId && record.requestId === requestId);
