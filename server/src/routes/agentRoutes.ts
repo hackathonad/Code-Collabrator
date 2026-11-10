@@ -524,7 +524,7 @@ router.post("/rooms/:roomId/agent/validate", guestSession, async (request, respo
     let validation: AgentValidationSummary;
     try {
       const result = await createValidationRunner()(category, validationController.signal);
-      validation = { category, status: result.cancelled ? "cancelled" : result.timedOut ? "unavailable" : result.ok ? "passed" : "failed", summary: result.summary, output: [result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 12_000), durationMs: result.durationMs };
+      validation = { category, status: result.cancelled ? "cancelled" : result.unavailable || result.timedOut ? "unavailable" : result.ok ? "passed" : "failed", summary: result.summary, output: [result.stdout, result.stderr].filter(Boolean).join("\n").slice(0, 12_000), durationMs: result.durationMs };
     } catch (error) {
       validation = { category, status: "unavailable", summary: error instanceof Error ? error.message : "Validation was unavailable" };
     }

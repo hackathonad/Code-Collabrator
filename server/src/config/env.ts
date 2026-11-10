@@ -1,5 +1,6 @@
 import path from "node:path";
 import dotenv from "dotenv";
+import { parseRepoAllowlist } from "../modules/git/githubPolicy";
 
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
@@ -63,6 +64,9 @@ export interface ServerEnvironment {
   anthropicApiKey: string;
   anthropicModel: string;
   githubToken: string;
+  githubSharedTokenEnabled: boolean;
+  githubAllowedRepos: string[];
+  serverProjectChecks: boolean;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
@@ -125,7 +129,15 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     anthropicModel: source.ANTHROPIC_MODEL?.trim() ?? "",
     // GitHub credentials are server-only. They are intentionally not part of
     // featureAvailability or any API response.
-    githubToken: source.GITHUB_TOKEN?.trim() ?? "",
+    // A shared token gives every guest the token owner's GitHub access, so it is
+    // ignored unless the operator explicitly opts in, and is then scoped by an allowlist.
+    githubToken: source.GITHUB_SHARED_TOKEN_ENABLED === "true" ? source.GITHUB_TOKEN?.trim() ?? "" : "",
+    githubSharedTokenEnabled: source.GITHUB_SHARED_TOKEN_ENABLED === "true",
+    githubAllowedRepos: parseRepoAllowlist(source.GITHUB_ALLOWED_REPOS),
+    // Fixed project checks run the server's own repository, not the room's code.
+    // They default on for local development and off in production, where the
+    // runtime image has no sources to check.
+    serverProjectChecks: source.ENABLE_SERVER_PROJECT_CHECKS === "true" ? true : source.ENABLE_SERVER_PROJECT_CHECKS === "false" ? false : !isProduction,
     livekitUrl: toLiveKitUrl(source.LIVEKIT_URL),
     livekitApiKey: source.LIVEKIT_API_KEY?.trim() ?? "",
     livekitApiSecret: source.LIVEKIT_API_SECRET?.trim() ?? "",
@@ -170,6 +182,8 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     issues.push("GUEST_SESSION_SECRET must be a unique value of at least 32 characters in production.");
   }
   if (source.SUPABASE_SERVICE_ROLE_KEY && !config.supabaseUrl) issues.push("SUPABASE_URL is required when SUPABASE_SERVICE_ROLE_KEY is configured.");
+  if (source.GITHUB_TOKEN?.trim() && !config.githubSharedTokenEnabled) issues.push("GITHUB_TOKEN is ignored unless GITHUB_SHARED_TOKEN_ENABLED=true.");
+  if (config.githubSharedTokenEnabled && !config.githubAllowedRepos.length) issues.push("GITHUB_ALLOWED_REPOS is empty: GitHub is limited to read-only access to public repositories.");
   if (config.livekitApiKey || config.livekitApiSecret || config.livekitUrl) {
     if (!(config.livekitApiKey && config.livekitApiSecret && config.livekitUrl)) issues.push("LIVEKIT_URL, LIVEKIT_API_KEY, and LIVEKIT_API_SECRET must be configured together.");
   }
@@ -197,7 +211,7 @@ export const featureAvailability = () => ({
   persistence: Boolean(env.supabaseUrl && env.supabaseServiceRoleKey),
   media: Boolean(env.livekitUrl && env.livekitApiKey && env.livekitApiSecret),
   github: Boolean(env.githubToken),
-  execution: true,
+  execution: env.serverProjectChecks,
   ai: {
     ollama: Boolean(env.ollamaBaseUrl),
     gemini: Boolean(env.geminiApiKey),

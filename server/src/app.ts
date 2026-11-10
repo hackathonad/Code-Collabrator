@@ -77,7 +77,7 @@ export const createApp = () => {
       persistence,
       ai: { healthy: providers.some((provider) => provider.available), providers },
       agent: { available: true, limits: { maxIterations: env.agentMaxIterations, maxToolCalls: env.agentMaxToolCalls, timeoutMs: env.agentTimeoutMs } },
-      execution: { available: true, scope: "server-project", limits: { timeoutMs: env.executionTimeoutMs, outputLimit: env.executionOutputLimit, maxConcurrent: env.executionMaxConcurrent } },
+      execution: { available: env.serverProjectChecks, scope: "server-project", limits: { timeoutMs: env.executionTimeoutMs, outputLimit: env.executionOutputLimit, maxConcurrent: env.executionMaxConcurrent } },
       features: featureAvailability()
     });
   });

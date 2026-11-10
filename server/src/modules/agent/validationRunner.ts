@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { env } from "../../config/env";
 import type { ValidationCategory, ValidationRunResult, ValidationRunner } from "./agentTypes";
 
 export const VALIDATION_COMMANDS: Record<ValidationCategory, { command: string; args: string[] }> = {
@@ -14,9 +15,12 @@ export const VALIDATION_TIMEOUT_MS = 30_000;
 
 const clip = (value: string) => value.length <= MAX_OUTPUT ? value : `${value.slice(0, MAX_OUTPUT)}\n[…output truncated…]`;
 
-export const createValidationRunner = (options: { cwd?: string; timeoutMs?: number } = {}): ValidationRunner => async (category, signal) => {
+export const createValidationRunner = (options: { cwd?: string; timeoutMs?: number; enabled?: boolean } = {}): ValidationRunner => async (category, signal) => {
   const command = VALIDATION_COMMANDS[category];
   if (!command) throw new Error("Validation category is not allowed");
+  if (!(options.enabled ?? env.serverProjectChecks)) {
+    return { category, ok: false, exitCode: null, timedOut: false, cancelled: false, unavailable: true, stdout: "", stderr: "", durationMs: 0, summary: `${category} unavailable: server project checks are turned off on this deployment` };
+  }
   if (signal?.aborted) return { category, ok: false, exitCode: null, timedOut: false, cancelled: true, stdout: "", stderr: "", durationMs: 0, summary: `${category} cancelled` };
   const executable = process.platform === "win32" ? process.execPath : command.command;
   const args = process.platform === "win32"

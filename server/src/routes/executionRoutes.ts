@@ -40,7 +40,7 @@ const requireRoom = async (request: GuestRequest) => {
 const sendError = (response: { status: (status: number) => { json: (payload: unknown) => void } }, error: unknown) => {
   if (error instanceof ExecutionRouteError) { response.status(error.status).json({ ok: false, message: error.message, code: error.code }); return; }
   if (error instanceof ExecutionServiceError) {
-    const status = error.code === "EXECUTION_NOT_FOUND" ? 404 : error.code === "EXECUTION_NOT_ALLOWED" ? 400 : error.code === "EXECUTION_CONFLICT" ? 409 : 429;
+    const status = error.code === "EXECUTION_NOT_FOUND" ? 404 : error.code === "EXECUTION_DISABLED" ? 403 : error.code === "EXECUTION_NOT_ALLOWED" ? 400 : error.code === "EXECUTION_CONFLICT" ? 409 : 429;
     response.status(status).json({ ok: false, message: error.message, code: error.code });
     return;
   }
