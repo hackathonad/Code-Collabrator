@@ -1,6 +1,6 @@
 ﻿import type { SupportedLanguage } from "../../constants/languages";
 
-export type RoomRole = "owner" | "moderator" | "member" | "guest";
+export type RoomRole = "owner" | "moderator" | "member" | "guest" | "viewer";
 export type UserIdentityKind = "guest";
 export type ParticipantAccent = "blue" | "emerald" | "amber" | "rose" | "violet" | "cyan";
 export type PresenceStatus = "active" | "idle" | "offline";

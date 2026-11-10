@@ -1,7 +1,7 @@
 ﻿import { Router } from "express";
 import { env } from "../config/env";
 import { createRateLimiter } from "../lib/rateLimiter";
-import { createGuestSessionToken, guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
+import { GUEST_TOKEN_TTL_MS, createGuestSessionToken, guestSession, guestTokenFromRequest, guestUserIdFromRequest, inspectGuestSessionToken, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
 import { roomStore } from "../modules/rooms/roomStore";
 import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { roomPersistence } from "../services/roomPersistence";
@@ -49,14 +49,8 @@ const participantResponse = (roomId: string, userId: string) => ({
   guestToken: createGuestSessionToken(roomId, userId)
 });
 
-const guestTokenFrom = (request: GuestRequest) => {
-  const bodyToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
-  const queryToken = typeof request.query.guestToken === "string" ? request.query.guestToken : "";
-  return bodyToken || queryToken;
-};
-
 export const roomParticipantId = (request: GuestRequest, roomId: string) => {
-  const userId = verifyGuestSessionToken(roomId, guestTokenFrom(request));
+  const userId = guestUserIdFromRequest(request, roomId);
   if (!userId) return "";
   try {
     roomStore.getParticipant(roomId, userId);
@@ -139,7 +133,7 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
       return;
     }
 
-    const suppliedToken = typeof request.body?.guestToken === "string" ? request.body.guestToken : "";
+    const suppliedToken = guestTokenFromRequest(request);
     const guestUserId = suppliedToken ? verifyGuestSessionToken(roomId, suppliedToken) : identity.userId;
     if (suppliedToken && !guestUserId) {
       sendError(response, 401, "A valid room session is required");
@@ -167,6 +161,39 @@ router.post("/:roomId/join", guestSession, async (request, response) => {
     });
   } catch (error) {
     sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Unable to join room");
+  }
+});
+
+/**
+ * Issues a fresh session for an existing participant. Sessions expire, so
+ * clients call this when a token is old or still in the pre-expiry format.
+ */
+router.post("/:roomId/session/refresh", guestSession, async (request, response) => {
+  const roomId = sanitizeRoomId(request.params.roomId);
+  if (!roomId) {
+    sendError(response, 400, "Valid room ID is required");
+    return;
+  }
+  if (throttledForMisses(request as GuestRequest, response)) return;
+  try {
+    if (!(await loadRoomIfNeeded(roomId))) {
+      recordMiss(request as GuestRequest);
+      sendError(response, 404, "Room not found");
+      return;
+    }
+    const inspected = inspectGuestSessionToken(roomId, guestTokenFromRequest(request));
+    if (!inspected) {
+      sendError(response, 401, "A valid room session is required");
+      return;
+    }
+    if (!roomStore.hasRoom(roomId) || !roomStore.getRoomSnapshot(roomId).participants.some((participant) => participant.userId === inspected.userId)) {
+      sendError(response, 403, "Join this room before refreshing its session.");
+      return;
+    }
+    const guestToken = createGuestSessionToken(roomId, inspected.userId);
+    response.json({ ok: true, guestToken, expiresAt: inspectGuestSessionToken(roomId, guestToken)?.expiresAt ?? Date.now() + GUEST_TOKEN_TTL_MS });
+  } catch (error) {
+    sendError(response, roomErrorStatus(error, 404), error instanceof Error ? error.message : "Unable to refresh the session");
   }
 });
 

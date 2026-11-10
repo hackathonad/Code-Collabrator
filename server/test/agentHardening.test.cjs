@@ -155,6 +155,18 @@ test("proposal routes restore safe state, authorize collaborators, and isolate r
     assert.equal(fullResponse.status, 200);
     assert.equal((await fullResponse.json()).patch.expectedContent, file.content);
 
+    // Policy (M1): a plain guest who did not request the task may not approve someone else's patch.
+    const refusedResponse = await fetch(`${baseUrl}/api/ai/rooms/${value.room.roomId}/agent/patch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guestToken: collaboratorToken, patch: proposal.patch })
+    });
+    assert.equal(refusedResponse.status, 403);
+    assert.equal((await refusedResponse.json()).code, "FORBIDDEN_ROLE");
+    assert.doesNotMatch(roomStore.getRoomSnapshot(value.room.roomId).workspace.files[file.id].content, /approved by collaborator/);
+
+    // Once the owner promotes them to a trusted role, the same collaborator can approve.
+    roomStore.updateRole(value.room.roomId, value.request.userId, collaborator.participant.userId, "member");
     const applyResponse = await fetch(`${baseUrl}/api/ai/rooms/${value.room.roomId}/agent/patch`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

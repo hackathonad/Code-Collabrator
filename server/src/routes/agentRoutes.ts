@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
+import { guestSession, guestUserIdFromRequest, type GuestRequest } from "../middleware/guestSession";
 import { aiService } from "../modules/ai/aiService";
 import { AIProviderRequestError, AIProviderUnavailableError, type AIChatMessage, type AIProviderId, type AISettings } from "../modules/ai/aiTypes";
 import { AI_CONTEXT_BUDGETS } from "../modules/ai/contextEngine";
@@ -11,6 +11,8 @@ import { createValidationRunner } from "../modules/agent/validationRunner";
 import type { AgentDiagnostic, AgentEvent, AgentMode, AgentPatch, AgentRequest, AgentPatchFile, AgentTaskPriority, AgentValidationSummary, ValidationCategory } from "../modules/agent/agentTypes";
 import { roomStore } from "../modules/rooms/roomStore";
 import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
+import { can, canApprovePatch, permissionDeniedMessage, type RoomAction } from "../modules/rooms/roomPermissions";
+import type { RoomRole } from "../modules/rooms/roomTypes";
 import { roomPersistence } from "../services/roomPersistence";
 import { checkAIBudget } from "../services/aiBudget";
 import { sanitizeRoomId } from "../utils/validation";
@@ -94,17 +96,22 @@ const parseDiagnostics = (value: unknown): AgentDiagnostic[] => !Array.isArray(v
   }];
 });
 
+const requireCan = (role: RoomRole, action: RoomAction) => {
+  if (!can(role, action)) throw new AgentRouteError(403, permissionDeniedMessage(action), "FORBIDDEN_ROLE");
+};
+
 const prepareRequest = async (request: GuestRequest): Promise<{ agent: AgentRequest; room: ReturnType<typeof roomStore.getRoomSnapshot> }> => {
   const roomId = sanitizeRoomId(request.params.roomId);
   const body = isRecord(request.body) ? request.body : {};
   if (JSON.stringify(body).length > MAX_AGENT_REQUEST_BYTES) throw new AgentRouteError(413, "This agent request is too large", "REQUEST_TOO_LARGE");
   if (!roomId) throw new AgentRouteError(400, "A valid room ID is required");
-  const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+  const userId = guestUserIdFromRequest(request, roomId);
   if (!userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
   if (!rateLimit(`${roomId}:${userId}`)) throw new AgentRouteError(429, "Agent request limit reached. Please wait a moment.", "RATE_LIMITED");
   if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
   let participant: ReturnType<typeof roomStore.getParticipant>;
   try { participant = roomStore.getParticipant(roomId, userId); } catch { throw new AgentRouteError(403, "You are not a participant in this room", "ROOM_SESSION_INVALID"); }
+  requireCan(participant.role, "use-ai");
   // Identities are free to mint, so spend is also bounded by network, room and a global daily budget.
   const budget = checkAIBudget({ ip: request.ip || request.socket.remoteAddress, roomId });
   if (!budget.ok) throw new AgentRouteError(budget.status, budget.message, budget.code);
@@ -168,15 +175,16 @@ const sendError = (response: Response, error: unknown) => {
   response.status(500).json({ ok: false, message: "Unable to complete the coding-agent request", code: "AGENT_ERROR" });
 };
 
-const loadTaskControlContext = async (request: GuestRequest) => {
+const loadTaskControlContext = async (request: GuestRequest, action: RoomAction | null = "use-ai") => {
   const roomId = sanitizeRoomId(request.params.roomId);
   const body = isRecord(request.body) ? request.body : {};
-  const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+  const userId = guestUserIdFromRequest(request, roomId);
   const taskId = typeof request.params.taskId === "string" ? request.params.taskId.trim().slice(0, 128) : "";
   if (!roomId || !userId || !taskId) throw new AgentRouteError(401, "A valid room session and task ID are required", "ROOM_SESSION_INVALID");
   if (!rateLimit(`${roomId}:${userId}:task-control`, env.agentRequestRateLimit)) throw new AgentRouteError(429, "Task updates are temporarily rate limited.", "RATE_LIMITED");
   if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
   const participant = roomStore.getParticipant(roomId, userId);
+  if (action) requireCan(participant.role, action);
   const task = getAgentTask(taskId, roomId);
   if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
   return { roomId, userId, participant, task, body };
@@ -266,8 +274,11 @@ const patchAgentRequest = (room: ReturnType<typeof roomStore.getRoomSnapshot>, u
 
 router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
   const controller = new AbortController();
-  const abortRequest = () => controller.abort();
-  request.once("close", abortRequest);
+  // Detect a client that went away from the RESPONSE. Since Node 16 the request's
+  // own "close" fires as soon as its body has been read, which would cancel every
+  // run (and swallow every error response) before the provider is even called.
+  const abortIfClientGone = () => { if (!response.writableFinished) controller.abort(); };
+  response.once("close", abortIfClientGone);
   let taskId: string | undefined;
   try {
     const prepared = await prepareRequest(request as GuestRequest);
@@ -287,7 +298,7 @@ router.post("/rooms/:roomId/agent", guestSession, async (request, response) => {
     updateTaskFromResult(taskId, result);
     response.json({ ok: true, result });
   } catch (error) { if (taskId) updateTaskFromError(taskId, error); if (!controller.signal.aborted && !response.writableEnded) sendError(response, error); }
-  finally { activeAgentControllers.delete(taskId ?? ""); if (taskId) unregisterAgentTaskController(taskId, controller); request.off("close", abortRequest); }
+  finally { activeAgentControllers.delete(taskId ?? ""); if (taskId) unregisterAgentTaskController(taskId, controller); response.off("close", abortIfClientGone); }
 });
 
 router.post("/rooms/:roomId/agent/stream", guestSession, async (request, response) => {
@@ -342,12 +353,13 @@ router.post("/rooms/:roomId/agent/:taskId/notes", guestSession, async (request, 
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
     const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const taskId = typeof request.params.taskId === "string" ? request.params.taskId.slice(0, 128) : "";
     const message = clip(body.message, 280);
     if (!roomId || !userId || !taskId || !message) throw new AgentRouteError(400, "A valid room session, task ID, and note are required");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     const participant = roomStore.getParticipant(roomId, userId);
+    requireCan(participant.role, "use-ai");
     const task = getAgentTask(taskId, roomId);
     if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
     const updated = addAgentTaskNote(taskId, roomId, userId, participant.displayName, message);
@@ -385,7 +397,7 @@ router.post("/rooms/:roomId/agent/:taskId/assignment", guestSession, async (requ
 
 router.post("/rooms/:roomId/agent/:taskId/watch", guestSession, async (request, response) => {
   try {
-    const { roomId, userId, participant, task, body } = await loadTaskControlContext(request as GuestRequest);
+    const { roomId, userId, participant, task, body } = await loadTaskControlContext(request as GuestRequest, null);
     if (typeof body.watching !== "boolean") throw new AgentRouteError(400, "A watching boolean is required", "INVALID_WATCH_STATE");
     const updated = toggleAgentTaskWatch(task.taskId, roomId, { userId, displayName: participant.displayName }, body.watching);
     if (!updated) throw new AgentRouteError(409, "The task watch state could not be updated", "TASK_UPDATE_REJECTED");
@@ -397,12 +409,11 @@ router.post("/rooms/:roomId/agent/:taskId/watch", guestSession, async (request, 
 router.post("/rooms/:roomId/agent/:taskId/cancel", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const taskId = typeof request.params.taskId === "string" ? request.params.taskId.slice(0, 128) : "";
     if (!roomId || !userId || !taskId) throw new AgentRouteError(400, "A valid room session and task ID are required");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
-    roomStore.getParticipant(roomId, userId);
+    requireCan(roomStore.getParticipant(roomId, userId).role, "use-ai");
     const task = getAgentTask(taskId, roomId, userId);
     if (!task) throw new AgentRouteError(404, "Agent task not found", "TASK_NOT_FOUND");
     const cancellable = ["queued", "planning", "running", "waiting_for_approval", "validating", "applying"].includes(task.status);
@@ -418,8 +429,7 @@ router.post("/rooms/:roomId/agent/:taskId/cancel", guestSession, async (request,
 router.get("/rooms/:roomId/agent/history", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const guestToken = typeof request.query.guestToken === "string" ? request.query.guestToken : undefined;
-    const userId = verifyGuestSessionToken(roomId, guestToken);
+    const userId = guestUserIdFromRequest(request, roomId);
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
@@ -430,7 +440,7 @@ router.get("/rooms/:roomId/agent/history", guestSession, async (request, respons
 router.get("/rooms/:roomId/agent/memory", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const userId = verifyGuestSessionToken(roomId, typeof request.query.guestToken === "string" ? request.query.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
@@ -442,11 +452,12 @@ router.post("/rooms/:roomId/agent/memory", guestSession, async (request, respons
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
     const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const summary = clip(body.summary, 320);
     if (!roomId || !userId || !summary) throw new AgentRouteError(400, "A room session and bounded memory note are required", "INVALID_MEMORY");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     const participant = roomStore.getParticipant(roomId, userId);
+    requireCan(participant.role, "use-ai");
     const entry = recordAgentMemory(roomId, "projectFacts", summary);
     roomStore.recordActivity(roomId, userId, "agent", `${participant.displayName} updated project memory`);
     response.json({ ok: true, entry, memory: getAgentMemory(roomId) });
@@ -456,12 +467,11 @@ router.post("/rooms/:roomId/agent/memory", guestSession, async (request, respons
 router.delete("/rooms/:roomId/agent/memory/:entryId", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const entryId = typeof request.params.entryId === "string" ? request.params.entryId.slice(0, 128) : "";
     if (!roomId || !userId || !entryId) throw new AgentRouteError(400, "A valid room session and memory entry are required", "INVALID_MEMORY");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
-    roomStore.getParticipant(roomId, userId);
+    requireCan(roomStore.getParticipant(roomId, userId).role, "use-ai");
     if (!removeAgentMemory(roomId, "projectFacts", entryId)) throw new AgentRouteError(404, "Project memory entry not found", "MEMORY_NOT_FOUND");
     response.json({ ok: true, memory: getAgentMemory(roomId) });
   } catch (error) { sendError(response, error); }
@@ -470,8 +480,7 @@ router.delete("/rooms/:roomId/agent/memory/:entryId", guestSession, async (reque
 router.get("/rooms/:roomId/agent/proposals", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const guestToken = typeof request.query.guestToken === "string" ? request.query.guestToken : undefined;
-    const userId = verifyGuestSessionToken(roomId, guestToken);
+    const userId = guestUserIdFromRequest(request, roomId);
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     roomStore.getParticipant(roomId, userId);
@@ -482,8 +491,7 @@ router.get("/rooms/:roomId/agent/proposals", guestSession, async (request, respo
 router.get("/rooms/:roomId/agent/proposals/:patchId", guestSession, async (request, response) => {
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
-    const guestToken = typeof request.query.guestToken === "string" ? request.query.guestToken : undefined;
-    const userId = verifyGuestSessionToken(roomId, guestToken);
+    const userId = guestUserIdFromRequest(request, roomId);
     const patchId = typeof request.params.patchId === "string" ? request.params.patchId.slice(0, 64) : "";
     if (!roomId || !userId || !patchId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
@@ -498,12 +506,14 @@ router.post("/rooms/:roomId/agent/validate", guestSession, async (request, respo
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
     const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const category = typeof body.category === "string" && validationCategories.has(body.category as ValidationCategory) ? body.category as ValidationCategory : null;
     if (!roomId || !userId || !category) throw new AgentRouteError(400, "A valid room session and validation category are required");
     if (!rateLimit(`${roomId}:${userId}:validate`, env.agentValidationRateLimit)) throw new AgentRouteError(429, "Validation limit reached. Please wait a moment.", "RATE_LIMITED");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
-    roomStore.getParticipant(roomId, userId);
+    const validatingParticipant = roomStore.getParticipant(roomId, userId);
+    requireCan(validatingParticipant.role, "use-ai");
+    requireCan(validatingParticipant.role, "run-checks");
     const taskId = typeof body.taskId === "string" ? body.taskId.slice(0, 64) : "";
     const taskRecord = taskId ? getAgentTask(taskId, roomId, userId) : null;
     const task = taskRecord?.taskId;
@@ -532,17 +542,19 @@ router.post("/rooms/:roomId/agent/patch", guestSession, async (request, response
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
     const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     if (!roomId || !userId) throw new AgentRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
     if (!rateLimit(`${roomId}:${userId}:patch`, env.agentPatchRateLimit)) throw new AgentRouteError(429, "Patch approval limit reached. Please wait a moment.", "RATE_LIMITED");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
     const room = roomStore.getRoomSnapshot(roomId);
-    roomStore.getParticipant(roomId, userId);
+    const approver = roomStore.getParticipant(roomId, userId);
     const patch = approvedPatchFromBody(body);
     if (patch.roomId && patch.roomId !== roomId) throw new AgentRouteError(409, "The patch belongs to another room", "PATCH_CONFLICT");
     if (patch.workspaceId && patch.workspaceId !== room.workspace.id) throw new AgentRouteError(409, "The patch belongs to another workspace", "PATCH_CONFLICT");
     const stored = getAgentProposal(patch.patchId);
     if (!stored || stored.patch.roomId !== roomId || !proposalMatches(stored.patch, patch)) throw new AgentRouteError(409, "The proposal is no longer available for this room session", "PATCH_CONFLICT");
+    const requesterId = stored.patch.taskId ? getAgentTask(stored.patch.taskId, roomId)?.userId : undefined;
+    if (!canApprovePatch(approver.role, userId, requesterId)) throw new AgentRouteError(403, permissionDeniedMessage("approve-patch"), "FORBIDDEN_ROLE");
     if (stored.status === "proposal_stale" || patch.baseVersion !== room.version) {
       updateAgentProposal(patch.patchId, "proposal_stale", room.version, userId);
       if (stored.patch.taskId) updateAgentTask(stored.patch.taskId, { status: "conflict", patchStatus: "stale" });
@@ -588,14 +600,16 @@ router.post("/rooms/:roomId/agent/proposal", guestSession, async (request, respo
   try {
     const roomId = sanitizeRoomId(request.params.roomId);
     const body = isRecord(request.body) ? request.body : {};
-    const userId = verifyGuestSessionToken(roomId, typeof body.guestToken === "string" ? body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     const patchId = clip(body.patchId, 64);
     if (!roomId || !userId || body.action !== "reject" || !patchId) throw new AgentRouteError(400, "A valid room session, patch ID, and reject action are required");
     if (!rateLimit(`${roomId}:${userId}:proposal`, env.agentPatchRateLimit)) throw new AgentRouteError(429, "Proposal update limit reached. Please wait a moment.", "RATE_LIMITED");
     if (!(await loadRoomIfNeeded(roomId))) throw new AgentRouteError(404, "Room not found", "ROOM_NOT_FOUND");
-    roomStore.getParticipant(roomId, userId);
+    const rejecter = roomStore.getParticipant(roomId, userId);
     const stored = getAgentProposal(patchId);
     if (!stored || stored.patch.roomId !== roomId) throw new AgentRouteError(409, "The proposal is not available for this room session", "PATCH_CONFLICT");
+    const rejectRequesterId = stored.patch.taskId ? getAgentTask(stored.patch.taskId, roomId)?.userId : undefined;
+    if (!canApprovePatch(rejecter.role, userId, rejectRequesterId)) throw new AgentRouteError(403, permissionDeniedMessage("approve-patch"), "FORBIDDEN_ROLE");
     if (stored.status === "proposal_rejected") {
       response.json({ ok: true, status: "rejected", patchId });
       return;

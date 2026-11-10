@@ -9,6 +9,7 @@ import { useRoomStore } from "../../store/useRoomStore";
 import type { Participant, TypingParticipant, UserSession } from "../../types/collaboration";
 import type { AIAction } from "../../types/ai";
 import type { AgentDiagnostic } from "../../types/agent";
+import { can } from "../../lib/permissions";
 import { EditorToolbar } from "./EditorToolbar";
 import { configureMonaco } from "./monacoSetup";
 
@@ -73,7 +74,8 @@ export const CollaborativeEditor = ({
   }, [fileId]);
 
   const currentUser = participants.find((participant) => participant.userId === session.userId);
-  const canEdit = Boolean(currentUser) && !isPaused;
+  const isViewOnly = Boolean(currentUser) && !can(currentUser?.role, "edit");
+  const canEdit = Boolean(currentUser) && !isPaused && !isViewOnly;
 
   const remoteParticipants = useMemo(
     () => participants.filter((participant) => participant.userId !== session.userId && participant.isOnline),
@@ -379,6 +381,11 @@ export const CollaborativeEditor = ({
           }}
         />
         {hasSelection && onOpenAIAssistant ? <button type="button" onClick={() => onOpenAIAssistant("custom")} className="theme-button-primary absolute right-4 top-14 z-20 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold shadow-lg"><Sparkles className="h-3.5 w-3.5" /> Ask AI</button> : null}
+        {isViewOnly ? (
+          <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-xl border border-sky-400/25 bg-sky-500/10 px-3 py-2 text-xs text-sky-100 shadow-lg backdrop-blur-md sm:inset-x-6 sm:bottom-6 sm:text-sm">
+            You have view-only access. Ask the room owner to change your role to edit.
+          </div>
+        ) : null}
         {isPaused ? (
           <div className="pointer-events-none absolute inset-x-4 bottom-4 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 shadow-lg backdrop-blur-md sm:inset-x-6 sm:bottom-6 sm:text-sm">
             Editing is paused. Code is read-only until the owner resumes.

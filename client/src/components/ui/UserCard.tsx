@@ -99,6 +99,7 @@ export const UserCard = ({ participant, isSelf, isRoomOwner, typingUserIds, canC
             <option value="moderator">Moderator</option>
             <option value="member">Member</option>
             <option value="guest">Guest</option>
+            <option value="viewer">Viewer (read-only)</option>
           </select>
         ) : null}
       </div>

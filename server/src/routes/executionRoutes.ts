@@ -4,6 +4,7 @@ import { guestSession, type GuestRequest } from "../middleware/guestSession";
 import { executionService, ExecutionServiceError } from "../modules/execution/executionService";
 import type { ExecutionAction } from "../modules/execution/executionTypes";
 import { roomStore } from "../modules/rooms/roomStore";
+import { can, permissionDeniedMessage } from "../modules/rooms/roomPermissions";
 import { loadRoomIfNeeded, roomParticipantId } from "./roomRoutes";
 import { logSafeEvent } from "../utils/safeLogger";
 import { sanitizeRoomId } from "../utils/validation";
@@ -62,6 +63,7 @@ router.get("/:roomId/execution/history", guestSession, (request, response) => wi
 
 router.post("/:roomId/execution", guestSession, (request, response) => withError(request as GuestRequest, response, async () => {
   const { roomId, userId, room } = await requireRoom(request as GuestRequest);
+  if (!can(roomStore.getParticipant(roomId, userId).role, "run-checks")) throw new ExecutionRouteError(403, "FORBIDDEN_ROLE", permissionDeniedMessage("run-checks"));
   if (!rateLimit(`${roomId}:${userId}`)) throw new ExecutionRouteError(429, "RATE_LIMITED", "Execution limit reached. Please wait a moment.");
   const body = isRecord(request.body) ? request.body : {};
   const action = typeof body.action === "string" && actions.has(body.action as ExecutionAction) ? body.action as ExecutionAction : null;

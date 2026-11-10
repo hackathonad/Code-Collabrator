@@ -1,5 +1,6 @@
 ﻿import { randomBytes, randomUUID } from "node:crypto";
 import { env } from "../../config/env";
+import { can } from "./roomPermissions";
 import { LANGUAGE_CONFIG, type SupportedLanguage } from "../../constants/languages";
 import type {
   ChatMessage,
@@ -43,7 +44,7 @@ interface ParticipantOptions {
 
 const createRoomId = () => {
   for (;;) {
-    const roomId = randomBytes(4).toString("hex");
+    const roomId = randomBytes(env.roomIdBytes).toString("hex");
     if (!rooms.has(roomId)) {
       return roomId;
     }
@@ -137,8 +138,8 @@ const ensureRoom = (roomId: string) => {
   return room;
 };
 
-const canEditCode = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
-const canManageContent = (role: RoomRole) => role === "owner" || role === "moderator" || role === "member" || role === "guest";
+const canEditCode = (role: RoomRole) => can(role, "edit");
+const canManageContent = (role: RoomRole) => can(role, "manage-content");
 
 const transferOwnershipIfNeeded = (room: RoomState) => {
   for (const participant of Object.values(room.participants)) {

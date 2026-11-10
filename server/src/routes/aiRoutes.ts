@@ -1,5 +1,5 @@
 import { Router, type Response } from "express";
-import { guestSession, verifyGuestSessionToken, type GuestRequest } from "../middleware/guestSession";
+import { guestSession, guestUserIdFromRequest, type GuestRequest } from "../middleware/guestSession";
 import { aiService } from "../modules/ai/aiService";
 import {
   AICancelledError,
@@ -17,6 +17,8 @@ import { createPromptMessages } from "../modules/ai/promptLibrary";
 import { gitService } from "../modules/git/gitService";
 import { roomStore } from "../modules/rooms/roomStore";
 import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
+import { can, permissionDeniedMessage } from "../modules/rooms/roomPermissions";
+import type { RoomRole } from "../modules/rooms/roomTypes";
 import { checkAIBudget } from "../services/aiBudget";
 import { sanitizeRoomId } from "../utils/validation";
 import { env } from "../config/env";
@@ -31,7 +33,7 @@ const actions = new Set<AIAction>(["explain", "generate", "fix", "optimize", "re
 const clip = (value: unknown, limit: number) => typeof value === "string" ? value.trim().slice(0, limit) : "";
 
 class AIRequestRouteError extends Error {
-  constructor(public readonly status: number, message: string, public readonly code: "INVALID_REQUEST" | "ROOM_SESSION_INVALID" | "RATE_LIMITED" | "AI_BUDGET_EXHAUSTED" = "INVALID_REQUEST") { super(message); }
+  constructor(public readonly status: number, message: string, public readonly code: "INVALID_REQUEST" | "ROOM_SESSION_INVALID" | "RATE_LIMITED" | "AI_BUDGET_EXHAUSTED" | "FORBIDDEN_ROLE" = "INVALID_REQUEST") { super(message); }
 }
 
 interface PreparedAIRequest {
@@ -87,15 +89,17 @@ const prepareAIRequest = async (request: GuestRequest): Promise<PreparedAIReques
   if (JSON.stringify(request.body ?? {}).length > MAX_AI_REQUEST_BYTES) throw new AIRequestRouteError(413, "This AI request is too large", "INVALID_REQUEST");
   const input = parseInput(request.body);
   if (!roomId || !input) throw new AIRequestRouteError(400, "A valid AI request is required");
-  const userId = verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
+  const userId = guestUserIdFromRequest(request, roomId);
   if (!userId) throw new AIRequestRouteError(401, "A valid room session is required", "ROOM_SESSION_INVALID");
   if (!rateLimit(roomId + ":" + userId)) throw new AIRequestRouteError(429, "AI request limit reached. Please wait a moment.", "RATE_LIMITED");
   if (!(await loadRoomIfNeeded(roomId))) throw new AIRequestRouteError(404, "Room not found");
+  let participantRole: RoomRole;
   try {
-    roomStore.getParticipant(roomId, userId);
+    participantRole = roomStore.getParticipant(roomId, userId).role;
   } catch {
     throw new AIRequestRouteError(403, "You are not a participant in this room", "ROOM_SESSION_INVALID");
   }
+  if (!can(participantRole, "use-ai")) throw new AIRequestRouteError(403, permissionDeniedMessage("use-ai"), "FORBIDDEN_ROLE");
   // Identities are free to mint, so spend is also bounded by network, room and a global daily budget.
   const budget = checkAIBudget({ ip: request.ip || request.socket.remoteAddress, roomId });
   if (!budget.ok) throw new AIRequestRouteError(budget.status, budget.message, budget.code);

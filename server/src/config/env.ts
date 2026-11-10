@@ -84,6 +84,7 @@ export interface ServerEnvironment {
   agentMaxToolCalls: number;
   agentTimeoutMs: number;
   roomMaxParticipants: number;
+  roomIdBytes: 4 | 6;
   maxActiveRooms: number;
   roomCreateRateLimit: number;
   roomMissRateLimit: number;
@@ -150,6 +151,8 @@ export const parseServerEnvironment = (source: EnvironmentSource = process.env):
     // Capacity and abuse controls. Every value has a hard upper bound so a
     // mistaken deployment setting cannot silently remove the protection.
     roomMaxParticipants: toBoundedNumber(source.ROOM_MAX_PARTICIPANTS, 25, 100),
+    // 6 bytes = 12 hex characters. Use 4 only until the room-id migration is applied to the database.
+    roomIdBytes: source.ROOM_ID_BYTES === "4" ? 4 : 6,
     maxActiveRooms: toBoundedNumber(source.MAX_ACTIVE_ROOMS, 500, 5_000),
     roomCreateRateLimit: toBoundedNumber(source.ROOM_CREATE_RATE_LIMIT, 60, 1_000),
     roomMissRateLimit: toBoundedNumber(source.ROOM_MISS_RATE_LIMIT, 20, 300),

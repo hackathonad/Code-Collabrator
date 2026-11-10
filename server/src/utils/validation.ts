@@ -1,7 +1,8 @@
 ﻿import { supportedLanguages, type SupportedLanguage } from "../constants/languages";
 import type { CursorState, RoomRole } from "../modules/rooms/roomTypes";
 
-const ROOM_ID_PATTERN = /^[a-f0-9]{8}$/i;
+// 8 hex characters are legacy IDs; new rooms use 12 (48 bits) so IDs cannot be enumerated.
+const ROOM_ID_PATTERN = /^(?:[a-f0-9]{8}|[a-f0-9]{12})$/i;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const MAX_USERNAME_LENGTH = 24;
@@ -39,7 +40,7 @@ export const isSupportedLanguage = (value: unknown): value is SupportedLanguage 
   typeof value === "string" && supportedLanguages.includes(value as SupportedLanguage);
 
 export const isEditableRole = (value: unknown): value is Exclude<RoomRole, "owner"> =>
-  value === "moderator" || value === "member" || value === "guest";
+  value === "moderator" || value === "member" || value === "guest" || value === "viewer";
 
 export const sanitizeBoolean = (value: unknown) => value === true;
 

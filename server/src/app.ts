@@ -40,7 +40,7 @@ const apiLimiter: express.RequestHandler = (request, response, next) => {
 export const corsOptions: cors.CorsOptions = {
   origin(origin, callback) { callback(null, isAllowedClientOrigin(origin)); },
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
+  allowedHeaders: ["Content-Type", "X-Guest-Token"],
   credentials: false,
   maxAge: 86_400
 };

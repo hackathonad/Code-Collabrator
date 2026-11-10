@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { guestSession, verifyGuestSessionToken } from "../middleware/guestSession";
+import { guestSession, guestUserIdFromRequest } from "../middleware/guestSession";
 import { mediaService as defaultMediaService } from "../modules/media/liveKitMediaService";
 import { MediaUnavailableError, type MediaService } from "../modules/media/mediaTypes";
 import { roomStore } from "../modules/rooms/roomStore";
@@ -29,7 +29,7 @@ export const createMediaRoutes = (mediaService: MediaService = defaultMediaServi
   router.post("/rooms/:roomId/media/token", guestSession, async (request, response) => {
     const roomId = sanitizeRoomId(request.params.roomId);
     if (!roomId) { error(response, 400, "A valid room ID is required.", "INVALID_ROOM"); return; }
-    const userId = verifyGuestSessionToken(roomId, typeof request.body?.guestToken === "string" ? request.body.guestToken : undefined);
+    const userId = guestUserIdFromRequest(request, roomId);
     if (!userId) { error(response, 401, "A valid room session is required.", "ROOM_SESSION_INVALID"); return; }
     if (!allowTokenRequest(`${roomId}:${userId}`)) { error(response, 429, "Too many media token requests. Please wait a moment.", "RATE_LIMITED"); return; }
     if (!(await loadRoomIfNeeded(roomId))) { error(response, 404, "Room not found.", "ROOM_NOT_FOUND"); return; }

@@ -18,6 +18,7 @@ import { ToastViewport } from "../components/ui/ToastViewport";
 import { useToast } from "../hooks/useToast";
 import { copyRoomCode, downloadSourceFile, runCodeExternally } from "../lib/editorActions";
 import { ApiNetworkError, ApiRequestError, api } from "../lib/api";
+import { shouldRefreshGuestToken } from "../lib/guestToken";
 import { storage } from "../lib/storage";
 import { useRoomSocket } from "../hooks/useRoomSocket";
 import { useRoomStore } from "../store/useRoomStore";
@@ -160,6 +161,22 @@ export const RoomPage = ({ guestMode = false }: { guestMode?: boolean }) => {
 
     storage.touchRecentRoom(session.roomId, session.username);
   }, [session]);
+
+  // Sessions expire. Trade an old (or pre-expiry) token for a fresh one so a
+  // returning collaborator keeps their identity and role.
+  const sessionRoomId = session?.roomId;
+  const sessionToken = session?.guestToken;
+  useEffect(() => {
+    if (!session || !shouldRefreshGuestToken(sessionToken)) return;
+    let cancelled = false;
+    void api.refreshSession(session.roomId, session).then((refreshed) => {
+      if (cancelled) return;
+      storage.saveSession(refreshed);
+      setSession(refreshed);
+    }).catch(() => { /* A failed refresh leaves the current token in use; the next request reports any real problem. */ });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionRoomId, sessionToken, setSession]);
 
   const toggleChat = () => {
     if (activePanel === "chat") setActivePanel(null);
