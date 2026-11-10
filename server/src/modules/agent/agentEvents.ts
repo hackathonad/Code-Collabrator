@@ -1,5 +1,5 @@
 import type { RoomSnapshot } from "../rooms/roomTypes";
-import type { AgentPatch, AgentProposalEvent, AgentProposalPublic } from "./agentTypes";
+import type { AgentPatch, AgentPatchFile, AgentProposalEvent, AgentProposalPublic, AgentReviewFinding } from "./agentTypes";
 import { updateAgentTask } from "./agentTaskHistory";
 import { logSafeEvent } from "../../utils/safeLogger";
 import { recordAgentMemory } from "./agentMemory";
@@ -13,7 +13,7 @@ export interface AgentWorkspaceChange {
   patch: AgentPatch;
 }
 
-interface StoredProposal {
+export interface StoredProposal {
   patch: AgentPatch;
   userId: string;
   status: AgentProposalEvent["type"];
@@ -133,4 +133,62 @@ export const markAgentProposalsStale = (roomId: string, currentVersion: number) 
     emitAgentProposal(event);
   }
   return events;
+};
+
+const PROPOSAL_STATUSES = new Set<StoredProposal["status"]>(["proposal_created", "proposal_approved", "proposal_rejected", "proposal_stale", "proposal_applied"]);
+const text = (value: unknown, limit: number) => (typeof value === "string" && value.length <= limit ? value : null);
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+
+const parsePatchFile = (value: unknown): AgentPatchFile | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const fileId = text(raw.fileId, 128); const path = text(raw.path, 260); const expectedContent = text(raw.expectedContent, 500_000); const replacement = text(raw.replacement, 500_000);
+  if (!fileId || !path || expectedContent === null || replacement === null) return null;
+  return { fileId, path, expectedContent, replacement, additions: count(raw.additions), deletions: count(raw.deletions), preview: text(raw.preview, 12_000) ?? "" };
+};
+
+const SEVERITIES = new Set(["critical", "high", "medium", "low", "info"]);
+const parseFinding = (value: unknown): AgentReviewFinding | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const title = text(raw.title, 240); const explanation = text(raw.explanation, 1_000);
+  if (!title || !explanation || !SEVERITIES.has(raw.severity as string)) return null;
+  return { severity: raw.severity as AgentReviewFinding["severity"], title, explanation, ...(text(raw.file, 260) ? { file: raw.file as string } : {}), ...(Number.isInteger(raw.line) ? { line: raw.line as number } : {}), ...(Number.isInteger(raw.column) ? { column: raw.column as number } : {}), ...(text(raw.suggestion, 800) ? { suggestion: raw.suggestion as string } : {}) };
+};
+
+const parseStoredProposal = (value: unknown, roomId: string): StoredProposal | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const outer = value as Record<string, unknown>;
+  const raw = outer.patch && typeof outer.patch === "object" && !Array.isArray(outer.patch) ? outer.patch as Record<string, unknown> : null;
+  if (!raw || raw.roomId !== roomId || typeof outer.userId !== "string" || !PROPOSAL_STATUSES.has(outer.status as StoredProposal["status"])) return null;
+  const patchId = text(raw.patchId, 64); const workspaceId = text(raw.workspaceId, 128); const fileId = text(raw.fileId, 128); const path = text(raw.path, 260);
+  const expectedContent = text(raw.expectedContent, 500_000); const replacement = text(raw.replacement, 500_000);
+  if (!patchId || !workspaceId || !fileId || !path || expectedContent === null || replacement === null || !Number.isInteger(raw.baseVersion) || (raw.baseVersion as number) < 1) return null;
+  const files = Array.isArray(raw.files) ? raw.files.slice(0, 10).flatMap((file) => { const parsed = parsePatchFile(file); return parsed ? [parsed] : []; }) : [];
+  const review = Array.isArray(raw.review) ? raw.review.slice(0, 30).flatMap((finding) => { const parsed = parseFinding(finding); return parsed ? [parsed] : []; }) : [];
+  const patch: AgentPatch = {
+    patchId, ...(text(raw.taskId, 128) ? { taskId: raw.taskId as string } : {}), roomId, workspaceId, fileId, path, baseVersion: raw.baseVersion as number, expectedContent, replacement,
+    additions: count(raw.additions), deletions: count(raw.deletions), preview: text(raw.preview, 12_000) ?? "", applied: outer.status === "proposal_applied", status: raw.status as AgentPatch["status"] ?? "pending",
+    ...(files.length ? { files } : {}), ...(review.length ? { review } : {})
+  };
+  return { patch, userId: outer.userId.slice(0, 128), status: outer.status as StoredProposal["status"] };
+};
+
+/**
+ * Restores proposals loaded from durable storage (oldest first) without
+ * emitting events. A proposal that was approved but never reported as applied
+ * is marked stale, because the server cannot know whether the apply finished.
+ * Live in-memory proposals for the room are never overwritten.
+ */
+export const hydrateAgentProposals = (roomId: string, raw: unknown[]): number => {
+  for (const stored of proposals.values()) if (stored.patch.roomId === roomId) return 0;
+  let restored = 0;
+  for (const entry of raw) {
+    const stored = parseStoredProposal(entry, roomId);
+    if (!stored || proposals.has(stored.patch.patchId)) continue;
+    if (stored.status === "proposal_approved") stored.status = "proposal_stale";
+    proposals.set(stored.patch.patchId, stored);
+    restored += 1;
+  }
+  return restored;
 };

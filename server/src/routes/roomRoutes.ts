@@ -5,6 +5,7 @@ import { GUEST_TOKEN_TTL_MS, createGuestSessionToken, guestSession, guestTokenFr
 import { roomStore } from "../modules/rooms/roomStore";
 import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import { roomPersistence } from "../services/roomPersistence";
+import { deleteRoomDurably } from "../services/roomDeletion";
 import { EMERGENCY_IDLE_TTL_MS, sweepIdleRooms } from "../services/roomLifecycle";
 import { gitService } from "../modules/git/gitService";
 import { isSupportedLanguage, sanitizeLanguage, sanitizeRoomId, sanitizeUsername } from "../utils/validation";
@@ -331,7 +332,7 @@ router.delete("/:roomId", guestSession, async (request, response) => {
     // Invalidate the live room before touching the optional database. A
     // persistence outage must never leave a deleted room usable in memory.
     roomStore.deleteRoom(roomId, userId);
-    const persisted = await roomPersistence.deleteRoom(roomId);
+    const persisted = await deleteRoomDurably(roomId);
     if (!persisted) {
       sendError(response, 503, "The room was deleted from active memory, but durable persistence could not be updated.");
       return;

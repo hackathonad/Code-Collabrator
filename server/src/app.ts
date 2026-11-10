@@ -16,6 +16,7 @@ import agentRoutes from "./routes/agentRoutes";
 import mediaRoutes from "./routes/mediaRoutes";
 import executionRoutes from "./routes/executionRoutes";
 import { roomPersistence } from "./services/roomPersistence";
+import { registerAgentStatePersistence } from "./services/agentStatePersistence";
 
 const API_RATE_LIMIT_WINDOW_MS = 60_000;
 const API_RATE_LIMIT_MAX_REQUESTS = env.apiRateLimit;
@@ -48,6 +49,7 @@ export const corsOptions: cors.CorsOptions = {
 export const createApp = () => {
   const app = express();
   app.disable("x-powered-by");
+  registerAgentStatePersistence();
   aiService.registerProvider(createOllamaProvider({ baseUrl: env.ollamaBaseUrl, defaultModel: env.ollamaModel }));
   aiService.registerProvider(createGeminiProvider({ apiKey: env.geminiApiKey, defaultModel: env.geminiModel }));
   aiService.registerProvider(createGroqProvider({ apiKey: env.groqApiKey, defaultModel: env.groqModel }));

@@ -5,7 +5,7 @@ import { logSafeEvent } from "../../utils/safeLogger";
 import { recordAgentMemory } from "./agentMemory";
 import { env } from "../../config/env";
 
-interface AgentTaskRecord extends AgentTaskPublic {
+export interface AgentTaskRecord extends AgentTaskPublic {
   userId: string;
   provider: AgentRequest["settings"]["provider"];
   model: string;
@@ -266,4 +266,83 @@ export const taskStatusForResult = (stoppedReason: AgentTaskStatus | AgentResult
   if (stoppedReason === "cancelled") return "cancelled";
   if (stoppedReason === "timeout") return "timed_out";
   return hasError ? "failed" : "completed";
+};
+
+const TASK_STATUSES = new Set<AgentTaskStatus>(Object.keys(transitions) as AgentTaskStatus[]);
+const TASK_MODES = new Set(["ASK", "EDIT", "DEBUG", "EXPLAIN"]);
+const PRIORITIES = new Set<AgentTaskPriority>(["normal", "high", "urgent"]);
+const PATCH_STATUSES = new Set(["none", "proposed", "applied", "stale", "rejected"]);
+const VALIDATION_STATUSES = new Set(["not-run", "running", "passed", "failed", "skipped", "unavailable", "cancelled"]);
+/** Statuses that depend on a live server process. After a restart nothing is running them. */
+const PROCESS_BOUND_STATUSES = new Set<AgentTaskStatus>(["queued", "planning", "running", "applying", "validating"]);
+
+const str = (value: unknown, limit: number) => (typeof value === "string" && value.length <= limit ? value : null);
+const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null);
+const person = (value: unknown): TaskPerson | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const userId = str(raw.userId, 128); const displayName = str(raw.displayName, 80);
+  return userId && displayName ? { userId, displayName } : null;
+};
+
+const parseStoredTask = (value: unknown, roomId: string): AgentTaskRecord | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const taskId = str(raw.taskId, 128); const userId = str(raw.userId, 128); const summary = str(raw.summary, 400);
+  const createdAt = num(raw.createdAt); const updatedAt = num(raw.updatedAt);
+  if (!taskId || !userId || summary === null || createdAt === null || updatedAt === null || raw.roomId !== roomId) return null;
+  if (!TASK_MODES.has(raw.mode as string) || !TASK_STATUSES.has(raw.status as AgentTaskStatus) || !PRIORITIES.has(raw.priority as AgentTaskPriority)) return null;
+  if (!PATCH_STATUSES.has(raw.patchStatus as string) || !VALIDATION_STATUSES.has(raw.validationStatus as string)) return null;
+  const notes = (Array.isArray(raw.notes) ? raw.notes : []).slice(-8).flatMap((entry): AgentTaskNote[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const note = entry as Record<string, unknown>;
+    const id = str(note.id, 128); const authorName = str(note.authorName, 80); const message = str(note.message, 280); const at = num(note.createdAt);
+    return id && authorName !== null && message && at !== null ? [{ id, authorName, message, createdAt: at }] : [];
+  });
+  const watchers = (Array.isArray(raw.watchers) ? raw.watchers : []).slice(-20).flatMap((entry) => { const parsed = person(entry); return parsed ? [parsed] : []; });
+  const assignedTo = person(raw.assignedTo);
+  const files = (Array.isArray(raw.files) ? raw.files : []).slice(0, 10).flatMap((entry) => { const parsed = str(entry, 260); return parsed ? [parsed] : []; });
+  return {
+    taskId, roomId, userId,
+    ...(str(raw.conversationId, 128) ? { conversationId: raw.conversationId as string } : {}),
+    mode: raw.mode as AgentRequest["mode"],
+    intent: (str(raw.intent, 40) ?? "custom") as AgentTaskRecord["intent"],
+    ...(raw.classification && typeof raw.classification === "object" && !Array.isArray(raw.classification) ? { classification: raw.classification as AgentTaskRecord["classification"] } : {}),
+    ...(str(raw.initiatorLabel, 80) ? { initiatorLabel: raw.initiatorLabel as string } : {}),
+    ...(str(raw.initiatorLabel, 80) ? { requestedBy: raw.initiatorLabel as string } : {}),
+    notes, priority: raw.priority as AgentTaskPriority, ...(assignedTo ? { assignedTo } : {}), watchers, files,
+    reviewCount: num(raw.reviewCount) ?? 0,
+    ...(str(raw.resultSummary, 400) ? { resultSummary: raw.resultSummary as string } : {}),
+    summary, provider: (str(raw.provider, 40) ?? "custom") as AgentTaskRecord["provider"], model: str(raw.model, 160) ?? "",
+    status: raw.status as AgentTaskStatus, patchStatus: raw.patchStatus as AgentTaskRecord["patchStatus"], validationStatus: raw.validationStatus as AgentTaskRecord["validationStatus"],
+    ...(str(raw.validationSummary, 400) ? { validationSummary: raw.validationSummary as string } : {}),
+    patchCount: num(raw.patchCount) ?? 0, createdAt, updatedAt
+  };
+};
+
+/**
+ * Restores a room's tasks from durable storage without emitting events.
+ * Work that was running when the server stopped cannot still be running, so it
+ * is closed as failed with an explanatory summary; tasks waiting on a human
+ * keep waiting. Returns the tasks that were changed so the caller can persist
+ * them. Live in-memory tasks for the room are never overwritten.
+ */
+export const hydrateAgentTasks = (roomId: string, raw: unknown[]): AgentTaskRecord[] => {
+  if (tasks.has(roomId)) return [];
+  const restored: AgentTaskRecord[] = [];
+  const changed: AgentTaskRecord[] = [];
+  for (const entry of raw) {
+    const task = parseStoredTask(entry, roomId);
+    if (!task || restored.some((existing) => existing.taskId === task.taskId)) continue;
+    if (PROCESS_BOUND_STATUSES.has(task.status)) {
+      task.status = "failed";
+      task.resultSummary = task.resultSummary || "Interrupted because the server restarted before this task finished.";
+      task.updatedAt = Date.now();
+      changed.push(task);
+    }
+    restored.push(task);
+  }
+  restored.sort((left, right) => right.createdAt - left.createdAt);
+  if (restored.length) tasks.set(roomId, restored.slice(0, MAX_TASKS_PER_ROOM));
+  return changed;
 };

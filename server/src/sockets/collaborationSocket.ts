@@ -5,6 +5,8 @@ import { loadRoomIfNeeded } from "../modules/rooms/roomLoader";
 import type { RoomRole, WorkspaceOperation, WorkspaceOperationType } from "../modules/rooms/roomTypes";
 import { verifyGuestSessionToken } from "../middleware/guestSession";
 import { roomPersistence } from "../services/roomPersistence";
+import { agentStatePersistence } from "../services/agentStatePersistence";
+import { deleteRoomDurably } from "../services/roomDeletion";
 import { getPublicAgentProposalHistory, getPublicAgentProposalState, subscribeAgentProposal, subscribeAgentWorkspaceChange } from "../modules/agent/agentEvents";
 import { getPublicAgentTaskHistory, subscribeAgentTasks } from "../modules/agent/agentTaskHistory";
 import { subscribeGitState } from "../modules/git/gitEvents";
@@ -106,6 +108,7 @@ export const clearCollaborationRuntime = async () => {
   socketRoomBindings.clear();
   await Promise.all(pendingSnapshots.map((snapshot) => roomPersistence.saveRoom(snapshot)));
   await roomPersistence.flush();
+  await agentStatePersistence.flush();
 };
 
 const participantKey = (roomId: string, userId: string) => `${roomId}:${userId}`;
@@ -480,7 +483,7 @@ export const registerCollaborationSocket = (io: Server) => {
       clearRoomTracking(payload.roomId);
       io.in(payload.roomId).socketsLeave(payload.roomId);
 
-      const persisted = await roomPersistence.deleteRoom(payload.roomId);
+      const persisted = await deleteRoomDurably(payload.roomId);
       if (!persisted) {
         const message = "The room was deleted from active memory, but durable persistence could not be updated.";
         reject(socket, message);
